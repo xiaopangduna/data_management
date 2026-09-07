@@ -1,8 +1,7 @@
-"""Import a YOLO-layout COCO tree into a FiftyOne dataset.
+"""Import YOLO-layout COCO into FiftyOne (delete-and-recreate).
 
-Only reads ``<coco-root>/images`` and ``<coco-root>/labels``.
-Detection is stored in ``ground_truth_detect``; other label types are rejected
-until added. Samples are tagged ``coco`` plus the split folder name.
+Reads only ``<coco-root>/images`` and ``labels``. Writes ``relpath``, tags
+``coco`` + split, and ``ground_truth_detect``. Hashes go in enrich_fiftyone_media.py.
 """
 
 from __future__ import annotations
@@ -10,8 +9,15 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
+
+warnings.filterwarnings(
+    "ignore",
+    category=SyntaxWarning,
+    module=r"glob2(\.|$)",
+)
 
 import fiftyone as fo
 
@@ -24,11 +30,12 @@ DEFAULT_DATASET_NAME = "coco2017"
 SUPPORTED_LABEL_TYPES = frozenset({"detection"})
 SOURCE_TAG = "coco"
 DETECT_FIELD = "ground_truth_detect"
+RELPATH_FIELD = "relpath"
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 ADD_SAMPLES_BATCH_SIZE = 1000
+SCAN_LOG_INTERVAL = 5000
 MAX_REPORTED_PARSE_ERRORS = 20
 
-# Ultralytics / COCO 2017 thing classes, index 0 == person.
 COCO_80_CLASSES: tuple[str, ...] = (
     "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck",
     "boat", "traffic light", "fire hydrant", "stop sign", "parking meter", "bench",
@@ -70,7 +77,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         Parsed arguments.
     """
     parser = argparse.ArgumentParser(
-        description="Import YOLO-layout COCO images/labels into FiftyOne."
+        description="Import YOLO COCO into FiftyOne; deletes same-name dataset."
     )
     parser.add_argument(
         "--coco-root",
@@ -86,15 +93,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--label-types",
         default="detection",
-        help=(
-            "Comma-separated label kinds. Only 'detection' is implemented "
-            f"(writes {DETECT_FIELD})."
-        ),
+        help="Comma-separated kinds. Only detection -> ground_truth_detect.",
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Scan and validate only; do not write to FiftyOne.",
+        help="Scan and validate only; do not delete or write a dataset.",
     )
     return parser.parse_args(argv)
 
@@ -124,28 +128,14 @@ def parse_label_types(raw_label_types: str) -> list[str]:
 
 
 def list_split_names(images_root: Path) -> list[str]:
-    """Return split folder names under ``images/``.
-
-    Args:
-        images_root: Path to ``<coco-root>/images``.
-
-    Returns:
-        Sorted split directory names.
-    """
+    """Return sorted split folder names under ``images/``."""
     if not images_root.is_dir():
         raise FileNotFoundError(f"Missing images directory: {images_root}")
     return sorted(path.name for path in images_root.iterdir() if path.is_dir())
 
 
 def list_image_paths(split_images_dir: Path) -> list[Path]:
-    """List image files in one split folder.
-
-    Args:
-        split_images_dir: Path such as ``images/val2017``.
-
-    Returns:
-        Sorted image paths.
-    """
+    """Return sorted image files in one split folder."""
     return sorted(
         path
         for path in split_images_dir.iterdir()
@@ -154,14 +144,7 @@ def list_image_paths(split_images_dir: Path) -> list[Path]:
 
 
 def list_label_stems(split_labels_dir: Path) -> set[str]:
-    """Return YOLO txt stems in one split labels folder.
-
-    Args:
-        split_labels_dir: Path such as ``labels/val2017``.
-
-    Returns:
-        Set of file stems (excludes ``*.cache``).
-    """
+    """Return YOLO txt stems in one split labels folder."""
     if not split_labels_dir.is_dir():
         return set()
     return {
@@ -169,6 +152,11 @@ def list_label_stems(split_labels_dir: Path) -> set[str]:
         for path in split_labels_dir.iterdir()
         if path.is_file() and path.suffix.lower() == ".txt"
     }
+
+
+def relative_posix_path(image_path: Path, coco_root: Path) -> str:
+    """Return a POSIX path relative to ``coco_root``."""
+    return image_path.resolve().relative_to(coco_root).as_posix()
 
 
 def _record_parse_error(result: SplitScanResult, message: str) -> None:
@@ -182,9 +170,6 @@ def parse_yolo_detection_file(
 ) -> list[fo.Detection]:
     """Parse a YOLO txt into FiftyOne detections.
 
-    Lines with more than 5 numbers are treated as non-detection (e.g. YOLO-seg)
-    and skipped. Invalid lines increment ``result.parse_error_count``.
-
     Args:
         label_path: Path to a YOLO label file.
         result: Split counters to update in place.
@@ -194,7 +179,7 @@ def parse_yolo_detection_file(
         Detection objects for valid 5-number rows, or an empty list.
     """
     detections: list[fo.Detection] = []
-    text = label_path.read_text(encoding="utf-8")
+    text = label_path.read_text(encoding="utf-8", errors="replace")
     for line_number, raw_line in enumerate(text.splitlines(), start=1):
         detection = _parse_yolo_detection_line(
             raw_line, label_path, line_number, result, emit_detections
@@ -217,7 +202,6 @@ def _parse_yolo_detection_line(
     parts = line.split()
     if len(parts) > 5:
         result.skipped_non_detection_line_count += 1
-        logger.debug("Skip non-detection line %s:%s", label_path, line_number)
         return None
     parsed = _parse_yolo_box_numbers(parts, label_path, line_number, result)
     if parsed is None:
@@ -258,37 +242,34 @@ def _parse_yolo_box_numbers(
 
 
 def scan_split(
-    coco_root: Path, split_name: str, build_samples: bool
-) -> tuple[SplitScanResult, list[fo.Sample]]:
-    """Scan one split and optionally build FiftyOne samples.
+    coco_root: Path, split_name: str, dataset: fo.Dataset | None
+) -> SplitScanResult:
+    """Scan one split and optionally insert samples in batches.
 
     Args:
         coco_root: COCO root containing ``images`` and ``labels``.
         split_name: Folder name under ``images/``.
-        build_samples: If True, construct ``fo.Sample`` objects.
+        dataset: Destination dataset, or None for dry-run.
 
     Returns:
-        Scan counters and samples (empty when ``build_samples`` is False).
+        Scan counters for the split.
     """
     result = SplitScanResult(split_name=split_name)
-    images_dir = coco_root / "images" / split_name
     labels_dir = coco_root / "labels" / split_name
-    image_paths = list_image_paths(images_dir)
-    label_stems = list_label_stems(labels_dir)
-    image_stems = {path.stem for path in image_paths}
+    image_paths = list_image_paths(coco_root / "images" / split_name)
     result.image_count = len(image_paths)
-    result.orphan_label_count = len(label_stems - image_stems)
-    samples: list[fo.Sample] = []
-    for image_path in image_paths:
-        sample = _scan_one_image(
-            image_path, labels_dir, split_name, result, build_samples
-        )
-        if sample is not None:
-            samples.append(sample)
-    return result, samples
+    result.orphan_label_count = len(
+        list_label_stems(labels_dir) - {path.stem for path in image_paths}
+    )
+    if not labels_dir.is_dir():
+        logger.warning("No labels directory for split %s: %s", split_name, labels_dir)
+    logger.info("Scanning split %s (%s images)", split_name, result.image_count)
+    _scan_split_images(coco_root, image_paths, labels_dir, split_name, result, dataset)
+    return result
 
 
 def _scan_one_image(
+    coco_root: Path,
     image_path: Path,
     labels_dir: Path,
     split_name: str,
@@ -308,26 +289,58 @@ def _scan_one_image(
         return None
     sample = fo.Sample(filepath=str(image_path.resolve()))
     sample.tags = [SOURCE_TAG, split_name]
+    sample[RELPATH_FIELD] = relative_posix_path(image_path, coco_root)
     if detections:
         sample[DETECT_FIELD] = fo.Detections(detections=detections)
     return sample
 
 
-def add_samples_in_batches(dataset: fo.Dataset, samples: list[fo.Sample]) -> None:
-    """Insert samples in fixed-size batches.
-
-    Args:
-        dataset: Destination FiftyOne dataset.
-        samples: Samples to add.
-    """
-    for start_index in range(0, len(samples), ADD_SAMPLES_BATCH_SIZE):
-        batch = samples[start_index : start_index + ADD_SAMPLES_BATCH_SIZE]
-        dataset.add_samples(batch)
-        logger.info(
-            "Added samples %s-%s",
-            start_index + 1,
-            start_index + len(batch),
+def _scan_split_images(
+    coco_root: Path,
+    image_paths: list[Path],
+    labels_dir: Path,
+    split_name: str,
+    result: SplitScanResult,
+    dataset: fo.Dataset | None,
+) -> None:
+    batch: list[fo.Sample] = []
+    added_count = 0
+    build_samples = dataset is not None
+    for image_index, image_path in enumerate(image_paths, start=1):
+        sample = _scan_one_image(
+            coco_root, image_path, labels_dir, split_name, result, build_samples
         )
+        if sample is not None:
+            batch.append(sample)
+        added_count += _flush_sample_batch(
+            dataset, batch, split_name, added_count, result.image_count, force=False
+        )
+        if image_index % SCAN_LOG_INTERVAL == 0 or image_index == result.image_count:
+            logger.info(
+                "Split %s scanned %s/%s", split_name, image_index, result.image_count
+            )
+    _flush_sample_batch(
+        dataset, batch, split_name, added_count, result.image_count, force=True
+    )
+
+
+def _flush_sample_batch(
+    dataset: fo.Dataset | None,
+    batch: list[fo.Sample],
+    split_name: str,
+    added_count: int,
+    image_count: int,
+    force: bool,
+) -> int:
+    if dataset is None or not batch:
+        return 0
+    if not force and len(batch) < ADD_SAMPLES_BATCH_SIZE:
+        return 0
+    dataset.add_samples(batch)
+    written = len(batch)
+    logger.info("Split %s wrote %s/%s", split_name, added_count + written, image_count)
+    batch.clear()
+    return written
 
 
 def print_scan_report(
@@ -345,11 +358,10 @@ def print_scan_report(
         dataset_name: Target FiftyOne dataset name.
         label_types: Requested label types.
         split_results: Per-split counters.
-        dataset_exists: Whether ``dataset_name`` already exists.
+        dataset_exists: Whether the named dataset existed before this run.
         dry_run: Whether this run writes nothing.
     """
-    mode = "dry-run" if dry_run else "import"
-    print(f"mode={mode}")
+    print(f"mode={'dry-run' if dry_run else 'import'}")
     print(f"coco_root={coco_root}")
     print(f"dataset_name={dataset_name}")
     print(f"label_types={','.join(label_types)}")
@@ -357,8 +369,8 @@ def print_scan_report(
     for result in split_results:
         _print_split_result(result)
     parse_error_total = sum(item.parse_error_count for item in split_results)
-    if dataset_exists:
-        print("merge_ok=false (dataset already exists; real import would abort)")
+    if dry_run and dataset_exists:
+        print("merge_ok=true (real import will DELETE and recreate this dataset)")
     elif parse_error_total:
         print("merge_ok=true with parse errors (bad lines skipped)")
     else:
@@ -392,6 +404,19 @@ def create_empty_dataset(dataset_name: str) -> fo.Dataset:
     return dataset
 
 
+def delete_dataset(dataset_name: str, reason: str) -> None:
+    """Delete a FiftyOne dataset if it exists.
+
+    Args:
+        dataset_name: Dataset name to delete.
+        reason: Log message explaining why.
+    """
+    if not fo.dataset_exists(dataset_name):
+        return
+    logger.warning("%s: deleting dataset %s", reason, dataset_name)
+    fo.delete_dataset(dataset_name)
+
+
 def run_splits(
     coco_root: Path,
     split_names: list[str],
@@ -407,19 +432,30 @@ def run_splits(
     Returns:
         Per-split scan counters.
     """
-    split_results: list[SplitScanResult] = []
-    build_samples = dataset is not None
-    for split_name in split_names:
-        result, samples = scan_split(coco_root, split_name, build_samples)
-        split_results.append(result)
-        if dataset is not None:
-            logger.info("Importing split %s (%s samples)", split_name, len(samples))
-            add_samples_in_batches(dataset, samples)
-    return split_results
+    return [scan_split(coco_root, split_name, dataset) for split_name in split_names]
+
+
+def _import_dataset(
+    coco_root: Path,
+    dataset_name: str,
+    split_names: list[str],
+    dataset_existed: bool,
+) -> list[SplitScanResult]:
+    if dataset_existed:
+        delete_dataset(dataset_name, "Replacing existing dataset")
+    dataset = create_empty_dataset(dataset_name)
+    try:
+        split_results = run_splits(coco_root, split_names, dataset)
+        dataset.save()
+        print(f"imported_dataset={dataset_name} samples={len(dataset)}")
+        return split_results
+    except Exception:
+        delete_dataset(dataset_name, "Import failed; removing incomplete dataset")
+        raise
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run dry-run validation or FiftyOne import.
+    """Run dry-run validation or a delete-and-recreate import.
 
     Args:
         argv: Optional CLI arguments.
@@ -442,19 +478,17 @@ def main(argv: list[str] | None = None) -> int:
     if not split_names:
         logger.error("No split folders under %s", coco_root / "images")
         return 1
-    dataset_exists = fo.dataset_exists(args.dataset_name)
-    if dataset_exists and not args.dry_run:
-        logger.error("Dataset already exists: %s", args.dataset_name)
-        return 2
-    dataset = None if args.dry_run else create_empty_dataset(args.dataset_name)
-    split_results = run_splits(coco_root, split_names, dataset)
+    dataset_existed = fo.dataset_exists(args.dataset_name)
+    if args.dry_run:
+        split_results = run_splits(coco_root, split_names, None)
+    else:
+        split_results = _import_dataset(
+            coco_root, args.dataset_name, split_names, dataset_existed
+        )
     print_scan_report(
         coco_root, args.dataset_name, label_types, split_results,
-        dataset_exists, args.dry_run,
+        dataset_existed, args.dry_run,
     )
-    if dataset is not None:
-        dataset.save()
-        print(f"imported_dataset={args.dataset_name} samples={len(dataset)}")
     return 0
 
 
