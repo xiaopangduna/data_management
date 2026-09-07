@@ -1,33 +1,30 @@
 [project]
-name = "project-name"
+name = "data-management"
 version = "0.1.0"
-description = "A skeleton project for demonstration"
+description = "Data management project"
 authors = [
-    {name = "黄文华",email = "18675381281@163.com"}
+    { name = "黄文华", email = "18675381281@163.com" }
 ]
 readme = "README.md"
-
-packages = [{ include = "project_name", from = "src" }]
-
 requires-python = ">=3.12"
-dependencies = [
-]
-
+dependencies = []
 
 [build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-[[tool.poetry.source]]
-name = "tuna"
-url = "https://pypi.tuna.tsinghua.edu.cn/simple/"
-priority = "primary"
-
+[tool.hatch.build.targets.wheel]
+packages = ["src/data_management"]
 
 [dependency-groups]
 dev = [
-    "pytest (>=9.0.1,<10.0.0)"
+    "pytest>=9.0.1,<10.0.0",
 ]
+
+[[tool.uv.index]]
+name = "tuna"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

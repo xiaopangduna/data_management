@@ -1,10 +1,6 @@
-# skeleton_python
+# data_management
 
-一个Python项目骨架示例，展示了标准的项目结构和测试实践。
-
-## 项目概述
-
-本项目是一个标准的Python项目骨架结构，旨在演示如何组织一个具有良好工程实践的Python项目。项目包含了标准的目录结构、测试用例、配置文件等常见项目组件。
+数据管理项目。当前基于标准 Python 包结构（uv + src 布局）维护。
 
 ## 项目结构
 
@@ -17,7 +13,7 @@
 ├── notebooks/            # Jupyter Notebooks目录
 ├── scripts/              # 脚本文件目录
 ├── src/                  # 源代码目录
-│   └── project_name/     # 主项目包
+│   └── data_management/  # 主项目包
 │       ├── demo_module/  # 示例模块
 │       │   └── DemoClass.py  # 示例类实现
 ├── tests/                # 测试文件目录
@@ -30,13 +26,13 @@
 
 ### DemoClass 类
 
-- 位置：[src/project_name/demo_module/DemoClass.py](file:///home/ubuntu/Desktop/project/skeleton_python/src/project_name/demo_module/DemoClass.py)
+- 位置：[src/data_management/demo_module/DemoClass.py](src/data_management/demo_module/DemoClass.py)
 - 功能：提供加法运算功能
 - 方法：add(a, b) - 执行两个数的加法运算
 
 ### 测试用例
 
-- 位置：[tests/test_DemoClass.py](file:///home/ubuntu/Desktop/project/skeleton_python/tests/test_DemoClass.py)
+- 位置：[tests/test_DemoClass.py](tests/test_DemoClass.py)
 - 功能：对 DemoClass 类进行测试
 - 测试方法：
   - test_debug_add() - 调试用简单测试
@@ -47,63 +43,56 @@
 ### 环境要求
 
 - Python >= 3.12
-- Poetry (推荐) 或 pip
+- [uv](https://docs.astral.sh/uv/)（推荐）
 
-### 使用 Poetry 安装（推荐）
+### 使用 uv 安装（推荐）
 
 ```bash
 # 克隆项目
 git clone <repository-url>
-cd skeleton_python
+cd data_management
 
-# 安装依赖
-poetry install
+# 安装依赖并创建 .venv
+uv sync
 
-# 激活虚拟环境
-poetry shell
+# 可选：激活虚拟环境
+source .venv/bin/activate
 ```
 
-### 使用 pip 安装
+未安装 uv 时，Linux / WSL 可用：
 
 ```bash
-# 克隆项目
-git clone <repository-url>
-cd skeleton_python
-
-# 创建虚拟环境（可选）
-python -m venv .venv
-source .venv/bin/activate  # Linux/Mac
-# 或 .venv\Scripts\activate  # Windows
-
-# 安装依赖
-pip install -e .
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source ~/.local/bin/env
 ```
 
 ## 常用指令
 
 ### 运行测试
 
+不必先激活环境，直接用 `uv run`：
+
 ```bash
 # 运行所有测试
-pytest tests/ -v
+uv run pytest -v
 
 # 运行特定测试文件
-pytest tests/test_DemoClass.py -v
+uv run pytest tests/test_DemoClass.py -v
 
 # 运行调试测试
-pytest tests/test_DemoClass.py::TestDemoClass::test_debug_add -v
+uv run pytest tests/test_DemoClass.py::TestDemoClass::test_debug_add -v
 
 # 运行参数化测试
-pytest tests/test_DemoClass.py::TestDemoClass::test_add_param -v
+uv run pytest tests/test_DemoClass.py::TestDemoClass::test_add_param -v
 
 # 运行日志测试
-pytest -v --log-cli-level=DEBUG
+uv run pytest -v --log-cli-level=DEBUG
 ```
 
 ### 使用DemoClass
 
 ```python
-from project_name.demo_module.DemoClass import DemoClass
+from data_management.demo_module.DemoClass import DemoClass
 
 demo = DemoClass()
 result = demo.add(2, 3)
@@ -127,20 +116,20 @@ print(result)  # 输出: 5
 
 ## 依赖管理
 
-本项目使用 Poetry 进行依赖管理：
+本项目使用 uv 进行依赖管理：
 
 ```bash
-# 添加依赖
-poetry add package_name
+# 添加运行依赖
+uv add package_name
 
 # 添加开发依赖
-poetry add --group dev package_name
+uv add --dev package_name
 
-# 更新依赖
-poetry update
+# 按锁文件同步环境
+uv sync
 
-# 导出 requirements.txt
-poetry export -f requirements.txt --output requirements.txt
+# 只更新锁文件
+uv lock
 ```
 
-配置文件：[pyproject.toml](file:///home/ubuntu/Desktop/project/skeleton_python/pyproject.toml)
+配置文件：[pyproject.toml](pyproject.toml)

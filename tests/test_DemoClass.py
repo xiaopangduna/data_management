@@ -4,7 +4,7 @@ DemoClass 的标准pytest测试用例
 """
 
 import pytest
-from project_name.demo_module.DemoClass import DemoClass
+from data_management.demo_module.DemoClass import DemoClass
 
 
 class TestDemoClass:
