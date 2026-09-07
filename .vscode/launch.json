@@ -1,0 +1,50 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+            // 直接调试Python文件
+        {
+            "name": "Python: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": false  // 允许调试第三方库
+        },
+            // 带参数调试当前文件
+        {
+            "name": "Python Debugger: Current File with Arguments",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "args": "${command:pickArgs}"
+        },
+        // 调试pytest测试用例
+        {
+            "name": "Python: pytest test file",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "${file}"  // 调试当前打开的测试文件
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        // 调试单个测试函数
+        {
+            "name": "Python: pytest test function",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "-k", "${fileBasenameNoExtension} and ${selectedText}"  // 调试选中的测试函数
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false
+        }
+    ]
+}
