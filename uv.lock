@@ -688,6 +688,9 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fiftyone" },
+    { name = "numpy" },
+    { name = "pillow" },
+    { name = "scipy" },
 ]
 
 [package.dev-dependencies]
@@ -696,7 +699,12 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "fiftyone", specifier = ">=1.21.0" }]
+requires-dist = [
+    { name = "fiftyone", specifier = ">=1.21.0" },
+    { name = "numpy" },
+    { name = "pillow" },
+    { name = "scipy" },
+]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=9.0.1,<10.0.0" }]

@@ -1,6 +1,6 @@
 """Fill media fields on an existing FiftyOne dataset.
 
-Computes sha256, a 64-bit perceptual difference hash (stored as ``phash``),
+Computes sha256, a 64-bit DCT perceptual hash (stored as ``phash``),
 and FiftyOne ``metadata`` (width, height, size, mime). Does not change
 filepaths, detections, or tags. Does not create or delete datasets.
 """
@@ -21,6 +21,8 @@ warnings.filterwarnings(
 )
 
 import fiftyone as fo
+import numpy as np
+from scipy.fftpack import dct
 from PIL import Image
 
 logger = logging.getLogger(__name__)
@@ -29,6 +31,8 @@ DEFAULT_DATASET_NAME = "coco2017"
 SUPPORTED_HASH_TYPES = frozenset({"sha256", "phash"})
 SHA256_FIELD = "sha256"
 PHASH_FIELD = "phash"
+PHASH_ALGORITHM_FIELD = "phash_algorithm"
+PHASH_ALGORITHM = "phash-dct-64-v1"
 LOG_INTERVAL = 2000
 SHA256_CHUNK_SIZE = 1024 * 1024
 
@@ -146,23 +150,30 @@ def compute_sha256_hex(file_path: Path) -> str:
 
 
 def compute_phash_hex(file_path: Path) -> str:
-    """Compute a 64-bit difference hash (near-duplicate / perceptual).
+    """Return a 64-bit DCT pHash, matching ImageHash's default phash.
 
-    Args:
-        file_path: Path to the image file.
-
-    Returns:
-        16-character hex string.
+    Grayscale -> 32x32 Lanczos -> unnormalized 2D DCT-II -> top-left
+    8x8 coefficients (including DC) -> threshold at their median.
+    Bits are packed in row-major order into 16 lowercase hex characters.
     """
     with Image.open(file_path) as image:
-        gray = image.convert("L").resize((9, 8), Image.Resampling.LANCZOS)
-        pixels = list(gray.getdata())
+        gray = image.convert("L").resize((32, 32), Image.Resampling.LANCZOS)
+        pixels = np.asarray(gray, dtype=float)
+    low_frequency = dct(dct(pixels, axis=0), axis=1)[:8, :8]
+    bits = low_frequency > np.median(low_frequency)
     value = 0
-    for row in range(8):
-        row_pixels = pixels[row * 9 : (row + 1) * 9]
-        for index in range(8):
-            value = (value << 1) | int(row_pixels[index] > row_pixels[index + 1])
+    for bit in bits.flat:
+        value = (value << 1) | int(bit)
     return f"{value:016x}"
+
+
+def phash_is_current(sample: fo.Sample) -> bool:
+    """Legacy/unversioned hashes must be recomputed, even without overwrite."""
+    if not sample_field_is_filled(sample, PHASH_FIELD):
+        return False
+    if not sample.has_field(PHASH_ALGORITHM_FIELD):
+        return False
+    return sample[PHASH_ALGORITHM_FIELD] == PHASH_ALGORITHM
 
 
 def count_enrichment_work(
@@ -195,7 +206,7 @@ def count_enrichment_work(
             continue
         if "sha256" in hash_types and (overwrite or not sample_field_is_filled(sample, SHA256_FIELD)):
             counts[SHA256_FIELD] += 1
-        if "phash" in hash_types and (overwrite or not sample_field_is_filled(sample, PHASH_FIELD)):
+        if "phash" in hash_types and (overwrite or not phash_is_current(sample)):
             counts[PHASH_FIELD] += 1
         if compute_metadata and (overwrite or not metadata_is_filled(sample)):
             counts["metadata"] += 1
@@ -223,8 +234,9 @@ def enrich_sample_hashes(
     if "sha256" in hash_types and (overwrite or not sample_field_is_filled(sample, SHA256_FIELD)):
         sample[SHA256_FIELD] = compute_sha256_hex(file_path)
         written.append(SHA256_FIELD)
-    if "phash" in hash_types and (overwrite or not sample_field_is_filled(sample, PHASH_FIELD)):
+    if "phash" in hash_types and (overwrite or not phash_is_current(sample)):
         sample[PHASH_FIELD] = compute_phash_hex(file_path)
+        sample[PHASH_ALGORITHM_FIELD] = PHASH_ALGORITHM
         written.append(PHASH_FIELD)
     return written
 

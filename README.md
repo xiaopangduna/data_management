@@ -25,6 +25,115 @@ source ~/.local/bin/env
 
 依赖见 [pyproject.toml](pyproject.toml)（含 `fiftyone`）。第一次 `import fiftyone` 可能在 `~/.fiftyone` 拉起本机 Mongo。
 
+## 用法
+
+图片留在原目录，FiftyOne 只存路径和元数据。无标注图用 `import_images.py` 入库，再用 `enrich_fiftyone_media.py` 补哈希和尺寸。带 YOLO 标签的 COCO 见下文「导入 YOLO → FiftyOne」。
+
+### Step：导入图片
+
+脚本：[scripts/import_images.py](scripts/import_images.py)
+
+从本地目录创建**持久化**图片数据集。只扫描图片、写入路径和 tags，不拷贝文件，也不推断类别或 train/val 划分。同名数据集已存在时拒绝写入（不覆盖、不追加）。
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--images-root` | 必填 | 图片根目录，支持相对路径及 `~` |
+| `--dataset-name` | 必填 | 新数据集名称 |
+| `--tags` | 无 | 统一添加的标签，逗号分隔 |
+| `--recursive` / `--no-recursive` | 递归 | 是否扫描子目录；不遍历目录符号链接 |
+| `--extensions` | `.jpg,.jpeg,.png,.webp,.bmp` | 扩展名，忽略大小写，可省略点 |
+| `--verify-images` | 关闭 | 解码校验图片；跳过坏图并记录路径 |
+| `--batch-size` | `1000` | 每批写入数量，必须大于零 |
+| `--dry-run` | 关闭 | 只扫描，不连接数据库；不检查数据集是否同名 |
+
+**先 dry-run：**
+
+```bash
+uv run python scripts/import_images.py \
+  --images-root /data/baby_monitor/images \
+  --dataset-name baby_monitor_raw \
+  --tags baby_monitor,raw \
+  --dry-run
+```
+
+关注报告中的 `valid=`。目录不存在或没有有效图片时不会创建数据集。默认只按扩展名扫描，不解码；需要检查坏图时加 `--verify-images`（dry-run 同样生效）。
+
+确认后再正式导入：
+
+```bash
+uv run python scripts/import_images.py \
+  --images-root /data/baby_monitor/images \
+  --dataset-name baby_monitor_raw \
+  --tags baby_monitor,raw
+```
+
+成功时打印 `imported_dataset=... samples=...`。每张图写入：
+
+- `filepath`：解析符号链接后的绝对路径
+- `relpath`：相对 `--images-root` 的 POSIX 路径
+- `tags`：`--tags` 中的标签
+
+相同规范化绝对路径只导入一次；不同目录中的同名文件会保留。多个符号链接指向同一文件时，保留首次遇到的相对路径。扫描结束会报告 `scanned` / `valid` / `duplicates` / `invalid` / `skipped`。正式写入中途失败会返回非零状态，**保留部分数据集**并报告已写入数量；重试需换新名称或自行处理该数据集。
+
+### Step：完善基础信息
+
+脚本：[scripts/enrich_fiftyone_media.py](scripts/enrich_fiftyone_media.py)
+
+对**已存在**的数据集补齐媒体字段，不改 `filepath`、检测框、tags，也不创建或删除数据集。目标数据集不存在则退出。
+
+先列出本机已有数据集，确认 `--dataset-name` 再跑补全：
+
+```bash
+uv run fiftyone datasets list
+```
+
+输出即为可传给 `--dataset-name` 的名称（例如导入后的 `baby_monitor_raw`）。没有对应名称时先回到上一步导入，不要凭空指定。
+
+默认写入：
+
+| 字段 | 说明 |
+|---|---|
+| `sha256` | 文件字节 SHA-256（小写 hex），用于内容去重/校验 |
+| `phash` | 64-bit DCT 感知哈希（16 位小写 hex），用于找视觉相近图 |
+| `phash_algorithm` | 固定 `phash-dct-64-v1`，标识算法版本 |
+| `metadata` | 宽、高、文件大小、MIME 等 |
+
+磁盘上找不到的文件会跳过并记 warning。默认增量补全：字段已有值则跳过。`phash` 例外：没有 `phash_algorithm=phash-dct-64-v1` 的旧值会强制重算。
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--dataset-name` | `coco2017` | 已有 FiftyOne 数据集名 |
+| `--hashes` | `sha256,phash` | 逗号分隔：`sha256`、`phash`，或 `none` |
+| `--metadata` / `--no-metadata` | 计算 | 是否写 FiftyOne metadata |
+| `--overwrite` | 关闭 | 已有值也重算 |
+| `--dry-run` | 关闭 | 只统计将要写入的条数，不写库 |
+
+**先 dry-run：**
+
+```bash
+uv run python scripts/enrich_fiftyone_media.py \
+  --dataset-name baby_monitor_raw \
+  --dry-run
+```
+
+关注 `sha256_to_write` / `phash_to_write` / `metadata_to_write` / `missing_files`。确认后再正式补全：
+
+```bash
+uv run python scripts/enrich_fiftyone_media.py --dataset-name baby_monitor_raw
+```
+
+成功时打印 `enrich_done=true`。之后可打开 App：
+
+```bash
+uv run fiftyone app launch baby_monitor_raw
+```
+
+只算尺寸、不算哈希：`--hashes none`。只算哈希、不算尺寸：`--no-metadata`。
+
+### Step：更新标签
+### Step：导出图片和标签的csv
+### Step：根据CSV生成数据集yolo格式
+
 ## YOLO 数据目录
 
 导入脚本**只读** `--coco-root` 下的内容，不读同级 csv。需要满足：
@@ -139,7 +248,9 @@ session = fo.launch_app(val)
 ```
 .
 ├── scripts/
-│   └── import_coco_yolo.py   # YOLO 布局 COCO → FiftyOne
+│   ├── import_images.py           # 无标注图片目录 → FiftyOne
+│   ├── enrich_fiftyone_media.py   # 补哈希与图片 metadata
+│   └── import_coco_yolo.py        # YOLO 布局 COCO → FiftyOne
 ├── src/data_management/      # 包代码（示例模块仍保留）
 ├── tests/
 ├── notebooks/
