@@ -145,7 +145,7 @@ uv run fiftyone app launch baby_monitor_raw
 
 留下哪一张：`relpath` 字典序最小（无则用 `filepath`），其次分辨率更大，再其次 sample id 更小。每次都先删精确重复，再在剩余样本上做相似分组。已有 `dup_near` / `dup_group` 的样本不再改标记。
 
-**相似组与 `--hamming-max`：** 按 pHash 的 Hamming 距离做连通分量聚类。默认 **`2`**（64-bit 里最多差 2 bit），能收进轻微压缩/缩放差异，又比 4～8 更不容易把相邻视频帧整段落进 `dup_near`。若标记明显偏少可再加大；偏多则降到 `0`（仅 phash 完全相同）。唯一哈希很多时两两比较会变慢。
+**相似组与 `--hamming-max`：** 按 pHash 的 Hamming 距离做连通分量聚类。默认 **`2`**（64-bit 里最多差 2 bit）。实现上按「鸽笼分块」建索引，只比较共享同一 bit 块的哈希，27 万张不必做全量两两比较。若标记明显偏少可再加大；偏多则降到 `0`（仅 phash 完全相同）。
 
 先列出数据集：
 
@@ -169,7 +169,15 @@ uv run python scripts/dedup_fiftyone.py \
   --dry-run
 ```
 
-关注 `exact_groups` / `exact_to_delete` / `near_groups` / `near_to_tag` / `csv_path`。每次运行（包括 dry-run）都会在**当前工作目录**覆盖写入 `dedup_<数据集>.csv`，避免聚类结果只打在终端上。表里包含精确组和相似组的**每一张**（含留下的那张）：
+关注 `exact_groups` / `exact_to_delete` / `near_groups` / `near_to_tag` / `csv_dir`。每次运行（包括 dry-run）都会在**当前工作目录的 `tmp/`** 下写 CSV（`tmp/` 已在 .gitignore 中）：
+
+| 文件 | 内容 |
+|---|---|
+| `tmp/dedup_<数据集>.csv` | 全量归档（精确 + 相似，全部列） |
+| `tmp/dedup_<数据集>_exact.csv` | 仅精确组；没有精确重复时不写 |
+| `tmp/dedup_<数据集>_near_01.csv` … | 相似组瘦表，每文件最多 200 个 `dup_group`，列只有 `kind,action,relpath,kept_relpath,dup_group` |
+
+重跑会覆盖同名文件，并删掉旧的 `near_*.csv` 再按当前组数重写。表里包含每组**每一张**（含留下的那张）：
 
 | 列 | 说明 |
 |---|---|

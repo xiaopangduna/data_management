@@ -3,9 +3,10 @@
 Exact matches share ``sha256``: keep one sample, delete the rest from the
 dataset (not from disk). Near matches share a 64-bit pHash within
 ``--hamming-max``: keep one sample untagged, tag the rest ``dup_near``, and
-write ``dup_group`` / ``dup_of``. Every run writes ``dedup_<dataset>.csv`` in
-the current working directory (including ``--dry-run``). Does not create or
-delete datasets.
+write ``dup_group`` / ``dup_of``. Every run writes CSVs under ``tmp/`` in the
+current working directory (including ``--dry-run``): a full archive, an exact
+file, and slim near shards of 200 groups each. Does not create or delete
+datasets.
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ DUP_NEAR_TAG = "dup_near"
 DUP_GROUP_FIELD = "dup_group"
 DUP_OF_FIELD = "dup_of"
 DEFAULT_HAMMING_MAX = 2
-HAMMING_UNIQUE_WARN = 8000
+PHASH_BITS = 64
 REPORT_COLUMNS = (
     "dataset_name",
     "kind",
@@ -50,6 +51,15 @@ REPORT_COLUMNS = (
     "kept_filepath",
     "kept_relpath",
 )
+SLIM_COLUMNS = (
+    "kind",
+    "action",
+    "relpath",
+    "kept_relpath",
+    "dup_group",
+)
+NEAR_GROUPS_PER_FILE = 200
+REPORT_SUBDIR = "tmp"
 
 
 @dataclass(frozen=True)
@@ -119,46 +129,50 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def field_text(sample: fo.Sample, field_name: str) -> str:
-    """Return a stripped string field, or empty if missing."""
-    if not sample.has_field(field_name):
-        return ""
-    value = sample[field_name]
+def normalize_text(value: object) -> str:
+    """Return a stripped string, or empty if missing."""
     if value is None:
         return ""
     return str(value).strip()
 
 
-def sample_area(sample: fo.Sample) -> int:
-    """Return width*height from metadata, or 0 if unavailable."""
-    metadata = sample.metadata if sample.has_field("metadata") else None
-    if metadata is None:
-        return 0
-    width = getattr(metadata, "width", None) or 0
-    height = getattr(metadata, "height", None) or 0
-    return int(width) * int(height)
-
-
-def sample_has_tag(sample: fo.Sample, tag: str) -> bool:
-    """Return True when ``tag`` is on the sample."""
-    tags = sample.tags if sample.has_field("tags") else None
-    return bool(tags) and tag in tags
+def field_values(dataset: fo.Dataset, field_name: str) -> list[object]:
+    """Return per-sample values, or None placeholders when the field is absent."""
+    if not dataset.has_field(field_name):
+        return [None] * len(dataset)
+    return dataset.values(field_name)
 
 
 def collect_sample_refs(dataset: fo.Dataset) -> list[SampleRef]:
-    """Load grouping fields for every sample."""
+    """Load grouping fields in bulk instead of iterating Sample objects."""
+    ids = dataset.values("id")
+    filepaths = dataset.values("filepath")
+    relpaths = field_values(dataset, "relpath")
+    sha256s = field_values(dataset, SHA256_FIELD)
+    phashes = field_values(dataset, PHASH_FIELD)
+    tags_list = field_values(dataset, "tags")
+    dup_groups = field_values(dataset, DUP_GROUP_FIELD)
+    if dataset.has_field("metadata"):
+        widths = dataset.values("metadata.width")
+        heights = dataset.values("metadata.height")
+    else:
+        widths = [None] * len(ids)
+        heights = [None] * len(ids)
     refs: list[SampleRef] = []
-    for sample in dataset.iter_samples():
+    for index, sample_id in enumerate(ids):
+        tags = tags_list[index] or []
+        width = widths[index] or 0
+        height = heights[index] or 0
         refs.append(
             SampleRef(
-                id=str(sample.id),
-                filepath=str(sample.filepath),
-                relpath=field_text(sample, "relpath"),
-                sha256=field_text(sample, SHA256_FIELD).lower(),
-                phash=field_text(sample, PHASH_FIELD).lower(),
-                area=sample_area(sample),
-                has_dup_near=sample_has_tag(sample, DUP_NEAR_TAG),
-                has_dup_group=bool(field_text(sample, DUP_GROUP_FIELD)),
+                id=str(sample_id),
+                filepath=str(filepaths[index]),
+                relpath=normalize_text(relpaths[index]),
+                sha256=normalize_text(sha256s[index]).lower(),
+                phash=normalize_text(phashes[index]).lower(),
+                area=int(width) * int(height),
+                has_dup_near=DUP_NEAR_TAG in tags,
+                has_dup_group=bool(normalize_text(dup_groups[index])),
             )
         )
     return refs
@@ -223,33 +237,50 @@ def parse_phash_int(phash: str) -> int | None:
     return value
 
 
+def phash_bit_blocks(hamming_max: int) -> list[tuple[int, int]]:
+    """Split 64-bit hashes into ``hamming_max + 1`` blocks (pigeonhole).
+
+    Two hashes with Hamming distance <= ``hamming_max`` must share at least
+    one identical block, so only pairs in the same block need comparing.
+    """
+    block_count = hamming_max + 1
+    base, remainder = divmod(PHASH_BITS, block_count)
+    blocks: list[tuple[int, int]] = []
+    shift = 0
+    for index in range(block_count):
+        width = base + (1 if index < remainder else 0)
+        if width <= 0:
+            continue
+        blocks.append((shift, (1 << width) - 1))
+        shift += width
+    return blocks
+
+
 def cluster_phashes(phashes: list[str], hamming_max: int) -> dict[str, str]:
     """Map each pHash to a canonical group id.
 
     ``hamming_max == 0`` groups identical strings. Larger values merge hashes
-    whose Hamming distance is at most the threshold (connected components).
+    whose Hamming distance is at most the threshold (connected components),
+    using block indexes instead of all-pairs comparison.
     """
     unique = sorted(set(phashes))
     if hamming_max == 0:
         return {item: item for item in unique}
-    n = len(unique)
-    if n == 0:
-        return {}
-    if n >= HAMMING_UNIQUE_WARN:
-        logger.warning(
-            "Clustering %s unique phashes at hamming_max=%s is O(n^2); this may take a while",
-            n,
-            hamming_max,
-        )
-    values: list[int] = []
     valid: list[str] = []
+    values: list[int] = []
     for item in unique:
         parsed = parse_phash_int(item)
         if parsed is None:
             continue
         valid.append(item)
         values.append(parsed)
-    parent = list(range(len(valid)))
+    n = len(valid)
+    if n == 0:
+        return {}
+    if hamming_max >= PHASH_BITS:
+        root = valid[0]
+        return {item: root for item in valid}
+    parent = list(range(n))
 
     def find(index: int) -> int:
         while parent[index] != index:
@@ -267,11 +298,26 @@ def cluster_phashes(phashes: list[str], hamming_max: int) -> dict[str, str]:
         else:
             parent[root_left] = root_right
 
-    for i, left in enumerate(values):
-        for j in range(i + 1, len(values)):
-            if (left ^ values[j]).bit_count() <= hamming_max:
-                union(i, j)
-    return {valid[i]: valid[find(i)] for i in range(len(valid))}
+    blocks = phash_bit_blocks(hamming_max)
+    logger.info(
+        "Clustering %s unique phashes hamming_max=%s blocks=%s",
+        n,
+        hamming_max,
+        len(blocks),
+    )
+    for shift, mask in blocks:
+        buckets: dict[int, list[int]] = defaultdict(list)
+        for index, value in enumerate(values):
+            buckets[(value >> shift) & mask].append(index)
+        for members in buckets.values():
+            if len(members) < 2:
+                continue
+            for left_pos, left_index in enumerate(members):
+                left_value = values[left_index]
+                for right_index in members[left_pos + 1 :]:
+                    if (left_value ^ values[right_index]).bit_count() <= hamming_max:
+                        union(left_index, right_index)
+    return {valid[index]: valid[find(index)] for index in range(n)}
 
 
 def near_groups(refs: list[SampleRef], hamming_max: int) -> dict[str, list[SampleRef]]:
@@ -322,9 +368,11 @@ def add_dup_near_tag(sample: fo.Sample) -> None:
         sample.tags = tags + [DUP_NEAR_TAG]
 
 
-def report_csv_path(dataset_name: str) -> Path:
-    """Return the stable CSV path in the current working directory."""
-    return Path.cwd() / f"dedup_{dataset_name}.csv"
+def report_dir() -> Path:
+    """Return ``<cwd>/tmp``, creating it if needed."""
+    path = Path.cwd() / REPORT_SUBDIR
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def csv_row(
@@ -382,12 +430,100 @@ def build_report_rows(
     return rows
 
 
-def write_report_csv(path: Path, rows: list[dict[str, str]]) -> None:
-    """Write the dedup plan CSV, overwriting a previous file of the same name."""
+def write_report_csv(
+    path: Path,
+    rows: list[dict[str, str]],
+    columns: tuple[str, ...] | None = None,
+) -> None:
+    """Write a CSV, overwriting a previous file of the same name."""
+    fieldnames = list(columns or REPORT_COLUMNS)
     with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(REPORT_COLUMNS))
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
+
+
+def slim_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Keep only columns meant for spreadsheet review."""
+    return [{column: row[column] for column in SLIM_COLUMNS} for row in rows]
+
+
+def group_rows_by_dup_group(rows: list[dict[str, str]]) -> list[list[dict[str, str]]]:
+    """Split already-sorted rows into contiguous ``dup_group`` lists."""
+    groups: list[list[dict[str, str]]] = []
+    current_key = None
+    current: list[dict[str, str]] = []
+    for row in rows:
+        key = row["dup_group"]
+        if current and key != current_key:
+            groups.append(current)
+            current = [row]
+        else:
+            current.append(row)
+        current_key = key
+    if current:
+        groups.append(current)
+    return groups
+
+
+def chunk_groups(
+    groups: list[list[dict[str, str]]],
+    groups_per_file: int,
+) -> list[list[dict[str, str]]]:
+    """Pack whole groups into shards of at most ``groups_per_file`` groups."""
+    shards: list[list[dict[str, str]]] = []
+    for start in range(0, len(groups), groups_per_file):
+        shard: list[dict[str, str]] = []
+        for group in groups[start : start + groups_per_file]:
+            shard.extend(group)
+        shards.append(shard)
+    return shards
+
+
+def clear_near_shards(directory: Path, dataset_name: str) -> None:
+    """Remove previous near shard files for this dataset."""
+    for path in directory.glob(f"dedup_{dataset_name}_near_*.csv"):
+        path.unlink()
+
+
+def write_dedup_csvs(dataset_name: str, rows: list[dict[str, str]]) -> dict[str, object]:
+    """Write archive, exact, and slim near-shard CSVs under ``tmp/``."""
+    directory = report_dir()
+    archive_path = directory / f"dedup_{dataset_name}.csv"
+    exact_path = directory / f"dedup_{dataset_name}_exact.csv"
+    write_report_csv(archive_path, rows)
+    exact_rows = [row for row in rows if row["kind"] == "exact"]
+    near_rows = [row for row in rows if row["kind"] == "near"]
+    if exact_rows:
+        write_report_csv(exact_path, exact_rows)
+    elif exact_path.exists():
+        exact_path.unlink()
+    clear_near_shards(directory, dataset_name)
+    near_shards = chunk_groups(
+        group_rows_by_dup_group(near_rows),
+        NEAR_GROUPS_PER_FILE,
+    )
+    shard_count = len(near_shards)
+    pad = max(2, len(str(shard_count)))
+    shard_paths: list[str] = []
+    for index, shard in enumerate(near_shards, start=1):
+        shard_path = directory / f"dedup_{dataset_name}_near_{index:0{pad}d}.csv"
+        write_report_csv(shard_path, slim_rows(shard), SLIM_COLUMNS)
+        shard_paths.append(str(shard_path))
+    logger.info(
+        "Wrote dedup CSVs dir=%s archive_rows=%s exact_rows=%s near_shards=%s",
+        directory,
+        len(rows),
+        len(exact_rows),
+        shard_count,
+    )
+    return {
+        "csv_dir": str(directory),
+        "csv_archive": str(archive_path),
+        "csv_exact": str(exact_path) if exact_rows else "none",
+        "near_shard_files": shard_count,
+        "csv_rows": len(rows),
+    }
 
 
 def apply_exact_deletes(dataset: fo.Dataset, rows: list[ExactDeleteRow]) -> int:
@@ -443,10 +579,8 @@ def run_dedup(
     updates, already_tagged = plan_near_updates(groups)
 
     near_to_tag = sum(1 for _group, dup_of, add_tag in updates.values() if add_tag)
-    csv_path = report_csv_path(dataset.name)
     csv_rows = build_report_rows(dataset.name, exact_groups, groups)
-    write_report_csv(csv_path, csv_rows)
-    logger.info("Wrote dedup CSV %s rows=%s", csv_path, len(csv_rows))
+    csv_info = write_dedup_csvs(dataset.name, csv_rows)
 
     print_report(
         {
@@ -461,8 +595,7 @@ def run_dedup(
             "near_groups": len(groups),
             "near_to_tag": near_to_tag,
             "already_tagged": already_tagged,
-            "csv_path": str(csv_path),
-            "csv_rows": len(csv_rows),
+            **csv_info,
         }
     )
     if dry_run:
@@ -479,7 +612,7 @@ def run_dedup(
         {
             "exact_deleted": deleted_count,
             "near_tagged": tagged_count,
-            "csv_path": str(csv_path),
+            "csv_dir": csv_info["csv_dir"],
             "dedup_done": "true",
         }
     )
