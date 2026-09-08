@@ -4,3 +4,6 @@ uv run fiftyone app launch BBM08S_head
 uv run python scripts/enrich_fiftyone_media.py   --dataset-name BBM08S_head   --dry-run
 uv run python scripts/dedup_fiftyone.py --dataset-name BBM08S_head 
 uv run python scripts/attach_yolo_labels.py --dataset-name BBM08S_head --labels-dir /mnt/nvme_data/data/head_train_data/head_train_26w_val_0.3w/train/labels --class-names baby_head
+uv run python scripts/export_training_csv.py \
+  --dataset-name BBM08S_head \
+  --class-names baby_head

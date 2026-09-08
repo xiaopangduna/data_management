@@ -27,7 +27,7 @@ source ~/.local/bin/env
 
 ## 用法
 
-图片留在原目录，FiftyOne 只存路径和元数据。无标注图用 `import_images.py` 入库，再用 `enrich_fiftyone_media.py` 补哈希和尺寸，然后用 `dedup_fiftyone.py` 去重，用 `attach_yolo_labels.py` 挂 YOLO 检测框。带 YOLO 标签的 COCO 见下文「导入 YOLO → FiftyOne」。
+图片留在原目录，FiftyOne 只存路径和元数据。无标注图用 `import_images.py` 入库，再用 `enrich_fiftyone_media.py` 补哈希和尺寸，然后用 `dedup_fiftyone.py` 去重，用 `attach_yolo_labels.py` 挂 YOLO 检测框，导出 CSV 后再用软链接生成训练用 YOLO 目录。带 YOLO 标签的 COCO 见下文「导入 YOLO → FiftyOne」。
 
 ### Step：导入图片
 
@@ -256,7 +256,51 @@ uv run python scripts/attach_yolo_labels.py \
 成功时打印 `attach_done=true`。在 App 里点开有框的图，类名应为 `baby_head` 而不是 `0`。`dup_near` 的图同样会挂框。
 
 ### Step：导出图片和标签的csv
+
+脚本：[scripts/export_training_csv.py](scripts/export_training_csv.py)
+
+从 FiftyOne 当前库导出训练清单，**不拷贝图片、不写 YOLO txt**。默认只要有 `ground_truth_detect` 的样本，并排除 tag `dup_near`。精确去重已从库删除的图不会出现。
+
+写出（均在 `tmp/`）：
+
+| 文件 | 内容 |
+|---|---|
+| `export_<数据集>.csv` | **总表**，一行一张图；`csv_to_yolo.py` 只读这份 |
+| `export_<数据集>_part_01.csv` … | 与总表相同列，每 5000 张一份，方便 Excel 打开 |
+| `export_<数据集>_issues.csv` | 仅当确有跳过项时才写 |
+
+总表列：`sample_id,filepath,relpath,tags,box_count,labels`。`labels` 为该图全部 YOLO 行（`class_id cx cy w h`），多框用 `;` 连接。`--class-names` 必须与挂框时一致。`--exclude-tags none` 可把 `dup_near` 也导出。重跑会覆盖总表并重建分片，同时删掉旧的 `_images.csv` / `_boxes.csv`。
+
+```bash
+uv run python scripts/export_training_csv.py \
+  --dataset-name BBM08S_head \
+  --class-names baby_head
+```
+
+关注 `images` / `boxes` / `issues` / `csv_path` / `part_files`。无框、未知类名、`relpath` 冲突的图不会进总表。
+
 ### Step：根据CSV生成数据集yolo格式
+
+脚本：[scripts/csv_to_yolo.py](scripts/csv_to_yolo.py)
+
+只读**总表**，不读 part 分片，**不连接 FiftyOne**。在 `--out-dir` 下生成：
+
+```
+<out-dir>/
+  images/train/<relpath>   # 软链接 → filepath（不复制原图）
+  labels/train/<stem>.txt  # 由 labels 列写出
+  data.yaml                # names 与 --class-names 一致；暂无独立 val，val 指向 train
+```
+
+```bash
+uv run python scripts/csv_to_yolo.py \
+  --csv tmp/export_BBM08S_head.csv \
+  --out-dir /mnt/nvme_data/data/head_train_data/BBM08S_head_yolo \
+  --class-names baby_head \
+  --dry-run
+```
+
+确认 `images` / `missing_file` 后去掉 `--dry-run` 正式建链。训练请把 `data.yaml` 的 `path` 指到这个新目录，不要再用原来的 `head_train_26w_val_0.3w`。App 里改过 tag 或删过图之后，应重新导出 CSV 再生成，不要手工改生成目录。
 
 ## YOLO 数据目录
 
@@ -376,6 +420,8 @@ session = fo.launch_app(val)
 │   ├── enrich_fiftyone_media.py   # 补哈希与图片 metadata
 │   ├── dedup_fiftyone.py          # 精确删除 + 相似打 dup_near
 │   ├── attach_yolo_labels.py      # 按文件名把 YOLO txt 挂到已有库
+│   ├── export_training_csv.py     # 筛库 → 训练总表 CSV + 分片
+│   ├── csv_to_yolo.py             # CSV → 软链接 YOLO 目录
 │   └── import_coco_yolo.py        # YOLO 布局 COCO → FiftyOne
 ├── src/data_management/      # 包代码（示例模块仍保留）
 ├── tests/
