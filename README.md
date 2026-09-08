@@ -298,24 +298,26 @@ uv run python scripts/export_xlabel.py \
 
 脚本：[scripts/attach_xlabel_labels.py](scripts/attach_xlabel_labels.py)
 
-扫描任务目录里的 `*.json`（不跟随目录符号链接），用 JSON 里的 `sample_id`（或 `description` 中的 `fo_sample_id=`）对上 sample，**覆盖**这批的 `ground_truth_detect`。目录里没有的图不动。成功写入的样本会加 tag `xlabel`；JSON `checked=true` 时再加 `xlabel_checked`。不改 filepath、哈希。
+扫描 `--label-dir` 下的 `*.json`（可含子目录，不跟随目录符号链接），用 JSON 里的 `sample_id`（或 `description` 中的 `fo_sample_id=`）对上 sample。**只替换 `--class-names` 中的类**：删掉库里这些类的旧框，再写入 JSON 里的框；其它类（如 `car`）不动。JSON 里没有这类框就清空这类。目录里没有 JSON 的图一律不动。不改 filepath、哈希。
 
-polygon 会先变成轴对齐外接框；`rotation` 等其它类型整份 JSON 拒绝写入。
+`--tags` 打在本批处理过的所有样本上。框确实改过的再加 tag `changed`；框没变则不加（重跑时会去掉已有的 `changed`）。App 里：勾批次 tag 看整批；再勾 `changed` 就是这批改过的；只勾批次、不勾 `changed` 就是这批没改的。清批次时删掉该 `--tags` 即可，`changed` 是共用名。
+
+polygon 会先变成轴对齐外接框；`rotation` 等其它类型整份 JSON 拒绝写入。不在 `--class-names` 里的 shape 会忽略，不阻断该文件。
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
 | `--dataset-name` | 必填 | 已有 FiftyOne 数据集名 |
-| `--task-dir` | 必填 | 上面的导出目录 |
-| `--class-names` | 必填 | 允许的类名白名单 |
-| `--no-overwrite` | 关闭 | 已有框与 JSON 不一致时不覆盖（与 YOLO 挂框相同） |
-| `--clear-empty` | 关闭 | JSON 无有效框时清空该图检测 |
+| `--label-dir` | 必填 | JSON 所在目录，如 `tmp/images/val2017` |
+| `--class-names` | 必填 | 要替换的检测类名 |
+| `--tags` | 必填 | 本批 tag；改过框的样本另加 `changed` |
 | `--dry-run` | 关闭 | 只解析并写问题 CSV |
 
 ```bash
 uv run python scripts/attach_xlabel_labels.py \
-  --dataset-name BBM08S_head \
-  --task-dir /mnt/nvme_data/data/relabel_BBM08S_head \
-  --class-names baby_head \
+  --dataset-name coco2017 \
+  --label-dir tmp/images/val2017 \
+  --class-names person \
+  --tags label_person_260909 \
   --dry-run
 ```
 
@@ -325,10 +327,8 @@ uv run python scripts/attach_xlabel_labels.py \
 |---|---|
 | `missing_sample_id` | JSON 里没有可解析的 sample id |
 | `orphan_label` | id 在库里不存在 |
-| `unknown_label` | 类名不在 `--class-names` |
+| `sample_id_collision` | 两个 JSON 指向同一个 sample |
 | `unsupported_shape` | 非 rectangle/polygon |
-| `empty_label` | 无有效框且未开 `--clear-empty` |
-| `box_mismatch` | 仅 `--no-overwrite` 时：与库中框不一致 |
 | `parse_error` / `missing_size` | JSON 损坏或没有宽高 |
 
 写回后若要训练，再跑「导出图片和标签的 csv」和 `csv_to_yolo.py`。
@@ -499,7 +499,7 @@ session = fo.launch_app(val)
 │   ├── dedup_fiftyone.py          # 精确删除 + 相似打 dup_near
 │   ├── attach_yolo_labels.py      # 按文件名把 YOLO txt 挂到已有库
 │   ├── export_xlabel.py           # 筛库 → 软链 + X-AnyLabeling JSON
-│   ├── attach_xlabel_labels.py    # 任务目录 JSON → 覆盖写回检测框
+│   ├── attach_xlabel_labels.py    # JSON 目录 → 覆盖写回检测框并打批次 tag
 │   ├── export_training_csv.py     # 筛库 → 训练总表 CSV + 分片
 │   ├── csv_to_yolo.py             # CSV → 软链接 YOLO 目录
 │   └── import_coco_yolo.py        # YOLO 布局 COCO → FiftyOne
