@@ -27,7 +27,7 @@ source ~/.local/bin/env
 
 ## 用法
 
-图片留在原目录，FiftyOne 只存路径和元数据。无标注图用 `import_images.py` 入库，再用 `enrich_fiftyone_media.py` 补哈希和尺寸，然后用 `dedup_fiftyone.py` 去重。带 YOLO 标签的 COCO 见下文「导入 YOLO → FiftyOne」。
+图片留在原目录，FiftyOne 只存路径和元数据。无标注图用 `import_images.py` 入库，再用 `enrich_fiftyone_media.py` 补哈希和尺寸，然后用 `dedup_fiftyone.py` 去重，用 `attach_yolo_labels.py` 挂 YOLO 检测框。带 YOLO 标签的 COCO 见下文「导入 YOLO → FiftyOne」。
 
 ### Step：导入图片
 
@@ -207,6 +207,54 @@ uv run fiftyone app launch baby_monitor_raw
 - 其实该留：去掉 `dup_near`；确实多余：在网页删除 sample，或之后 `dataset.match_tags("dup_near").delete()`
 
 ### Step：更新标签
+
+脚本：[scripts/attach_yolo_labels.py](scripts/attach_yolo_labels.py)
+
+给**已存在**的数据集挂 YOLO 检测框。按 `relpath` 去掉扩展名后与 `labels/<stem>.txt` 配对（子目录则整段相对路径配对）。不改 filepath、哈希、tags，也不覆盖库里已有的框。冲突写入 `tmp/attach_labels_<数据集>.csv`，不中断整次任务。
+
+`--class-names` 为逗号分隔的**有序列表**，下标即 YOLO `class_id`（`baby_head` 表示 `0`）。框写入字段 `ground_truth_detect`（FiftyOne `Detections`，左上角相对 xywh），并用 `label_relpath` 记下对应 txt。不要把类别写进 sample tags。
+
+忽略 `*.cache`。无 txt 的图计为 `unlabeled`，不算错误。有 txt 但库里没有对应图（例如精确去重已删的 sample）记为 `orphan_label`。
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--dataset-name` | 必填 | 已有 FiftyOne 数据集名 |
+| `--labels-dir` | 必填 | YOLO txt 目录 |
+| `--class-names` | 必填 | 类别名列表，顺序 = class_id |
+| `--dry-run` | 关闭 | 只解析并写问题 CSV，不改库 |
+
+问题 CSV 的 `issue`：
+
+| issue | 含义 |
+|---|---|
+| `stem_collision` | 多个 sample 同一文件名，无法唯一对应一份 txt |
+| `class_id_out_of_range` | txt 的 id 不在 `--class-names` 里 |
+| `parse_error` | 行不是 5 个数、或框宽高非法 |
+| `box_mismatch` | 库里已有框且与 txt 不一致，**不覆盖** |
+| `orphan_label` | 有 txt，库里没有对应图 |
+| `empty_label` | txt 为空或没有有效框 |
+
+**先 dry-run：**
+
+```bash
+uv run python scripts/attach_yolo_labels.py \
+  --dataset-name BBM08S_head \
+  --labels-dir /mnt/nvme_data/data/head_train_data/head_train_26w_val_0.3w/train/labels \
+  --class-names baby_head \
+  --dry-run
+```
+
+关注 `matched` / `unlabeled` / `to_write` / `issues` / `csv_path`。确认后再正式写入：
+
+```bash
+uv run python scripts/attach_yolo_labels.py \
+  --dataset-name BBM08S_head \
+  --labels-dir /mnt/nvme_data/data/head_train_data/head_train_26w_val_0.3w/train/labels \
+  --class-names baby_head
+```
+
+成功时打印 `attach_done=true`。在 App 里点开有框的图，类名应为 `baby_head` 而不是 `0`。`dup_near` 的图同样会挂框。
+
 ### Step：导出图片和标签的csv
 ### Step：根据CSV生成数据集yolo格式
 
@@ -327,6 +375,7 @@ session = fo.launch_app(val)
 │   ├── import_images.py           # 无标注图片目录 → FiftyOne
 │   ├── enrich_fiftyone_media.py   # 补哈希与图片 metadata
 │   ├── dedup_fiftyone.py          # 精确删除 + 相似打 dup_near
+│   ├── attach_yolo_labels.py      # 按文件名把 YOLO txt 挂到已有库
 │   └── import_coco_yolo.py        # YOLO 布局 COCO → FiftyOne
 ├── src/data_management/      # 包代码（示例模块仍保留）
 ├── tests/
