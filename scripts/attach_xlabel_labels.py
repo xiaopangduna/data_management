@@ -36,6 +36,7 @@ REPORT_SUBDIR = "tmp"
 SAMPLE_ID_PREFIX = "fo_sample_id="
 XLABEL_CHECKED_TAG = "xlabel_checked"
 CHANGED_TAG = "changed"
+PIXEL_TOL = 2
 SKIP_JSON_NAMES = frozenset({"manifest.json"})
 SUPPORTED_SHAPES = frozenset({"rectangle", "polygon"})
 ISSUE_COLUMNS = (
@@ -364,19 +365,50 @@ def boxes_for_classes(
     return tuple(item for item in boxes if item[0] in names)
 
 
-def pixel_box_key(
-    label: str,
+def pixel_xyxy(
     bbox: tuple[float, float, float, float],
     width: int,
     height: int,
-) -> tuple[str, int, int, int, int]:
-    """Map a relative xywh box to integer pixel xyxy for equality checks."""
+) -> tuple[int, int, int, int]:
+    """Map relative xywh to integer pixel xyxy."""
     left, top, box_w, box_h = bbox
     x1 = round(left * width)
     y1 = round(top * height)
     x2 = round((left + box_w) * width)
     y2 = round((top + box_h) * height)
-    return (label, x1, y1, x2, y2)
+    return (x1, y1, x2, y2)
+
+
+def max_corner_delta(
+    left: tuple[int, int, int, int], right: tuple[int, int, int, int]
+) -> int:
+    """Largest absolute difference among the four corners."""
+    return max(abs(left[index] - right[index]) for index in range(4))
+
+
+def groups_match(
+    old_boxes: list[tuple[int, int, int, int]],
+    new_boxes: list[tuple[int, int, int, int]],
+    tol: int,
+) -> bool:
+    """Greedy match: every old box has a unique new box within ``tol`` pixels."""
+    if len(old_boxes) != len(new_boxes):
+        return False
+    used = [False] * len(new_boxes)
+    for old in old_boxes:
+        best_index = -1
+        best_delta = None
+        for index, new in enumerate(new_boxes):
+            if used[index]:
+                continue
+            delta = max_corner_delta(old, new)
+            if delta <= tol and (best_delta is None or delta < best_delta):
+                best_index = index
+                best_delta = delta
+        if best_index < 0:
+            return False
+        used[best_index] = True
+    return True
 
 
 def boxes_equal(
@@ -386,17 +418,20 @@ def boxes_equal(
     width: int,
     height: int,
 ) -> bool:
-    """True when class-name boxes match at 1-pixel resolution."""
-    old = tuple(
-        sorted(
-            pixel_box_key(label, bbox, width, height)
-            for label, bbox in boxes_for_classes(current, names)
-        )
+    """True when class-name boxes match within PIXEL_TOL of each corner."""
+    old_by_label: dict[str, list[tuple[int, int, int, int]]] = {}
+    new_by_label: dict[str, list[tuple[int, int, int, int]]] = {}
+    for label, bbox in boxes_for_classes(current, names):
+        old_by_label.setdefault(label, []).append(pixel_xyxy(bbox, width, height))
+    for label, bbox in new_boxes:
+        new_by_label.setdefault(label, []).append(pixel_xyxy(bbox, width, height))
+    if set(old_by_label) != set(new_by_label):
+        return False
+    labels = set(old_by_label) | set(new_by_label)
+    return all(
+        groups_match(old_by_label.get(label, []), new_by_label.get(label, []), PIXEL_TOL)
+        for label in labels
     )
-    new = tuple(
-        sorted(pixel_box_key(label, bbox, width, height) for label, bbox in new_boxes)
-    )
-    return old == new
 
 
 def build_attach_plan(
@@ -486,19 +521,18 @@ def merge_tags(
     *,
     boxes_changed: bool,
 ) -> list[str]:
-    """Add batch tags; add ``changed`` when boxes changed, else drop it."""
+    """Tag only changed samples with batch tags and ``changed``; strip them otherwise."""
     tags = [str(tag) for tag in (existing or [])]
-    for tag in extra:
-        if tag not in tags:
-            tags.append(tag)
+    drop = set(extra)
+    drop.add(CHANGED_TAG)
     if boxes_changed:
-        if CHANGED_TAG not in tags:
-            tags.append(CHANGED_TAG)
-    else:
-        tags = [tag for tag in tags if tag != CHANGED_TAG]
-    if checked and XLABEL_CHECKED_TAG not in tags:
-        tags.append(XLABEL_CHECKED_TAG)
-    return tags
+        tags = [tag for tag in tags if tag not in drop]
+        tags.extend(extra)
+        tags.append(CHANGED_TAG)
+        if checked and XLABEL_CHECKED_TAG not in tags:
+            tags.append(XLABEL_CHECKED_TAG)
+        return tags
+    return [tag for tag in tags if tag not in drop]
 
 
 def replace_class_detections(
@@ -545,7 +579,7 @@ def apply_tags(
     to_tag: dict[str, ParsedBoxes],
     extra_tags: list[str],
 ) -> int:
-    """Add batch tags when boxes did not change. Returns samples tagged."""
+    """Strip batch tags when boxes did not change. Returns samples updated."""
     if not to_tag:
         return 0
     tagged = 0
@@ -596,7 +630,7 @@ def run_attach(
     written = apply_writes(dataset, plan.to_write, extra_tags, set(names))
     tagged = apply_tags(dataset, plan.to_tag, extra_tags)
     dataset.save()
-    print_report({"written": written, "tagged_unchanged": tagged, "attach_done": "true"})
+    print_report({"written": written, "unchanged_tags_cleared": tagged, "attach_done": "true"})
     return 0
 
 

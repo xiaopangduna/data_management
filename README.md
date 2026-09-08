@@ -300,7 +300,7 @@ uv run python scripts/export_xlabel.py \
 
 扫描 `--label-dir` 下的 `*.json`（可含子目录，不跟随目录符号链接），用 JSON 里的 `sample_id`（或 `description` 中的 `fo_sample_id=`）对上 sample。**只替换 `--class-names` 中的类**：删掉库里这些类的旧框，再写入 JSON 里的框；其它类（如 `car`）不动。JSON 里没有这类框就清空这类。目录里没有 JSON 的图一律不动。不改 filepath、哈希。
 
-`--tags` 打在本批处理过的所有样本上。框确实改过的再加 tag `changed`；框没变则不加（重跑时会去掉已有的 `changed`）。App 里：勾批次 tag 看整批；再勾 `changed` 就是这批改过的；只勾批次、不勾 `changed` 就是这批没改的。清批次时删掉该 `--tags` 即可，`changed` 是共用名。
+`--tags` 和 `changed` **只打在框确实改过的样本上**。没改的图不打这两类 tag；若上次误打过，重跑会从这些图上拿掉。App 里勾批次 tag 就是这批改过的图。角点允许差 2 像素，仍算没改。
 
 polygon 会先变成轴对齐外接框；`rotation` 等其它类型整份 JSON 拒绝写入。不在 `--class-names` 里的 shape 会忽略，不阻断该文件。
 
@@ -309,7 +309,7 @@ polygon 会先变成轴对齐外接框；`rotation` 等其它类型整份 JSON �
 | `--dataset-name` | 必填 | 已有 FiftyOne 数据集名 |
 | `--label-dir` | 必填 | JSON 所在目录，如 `tmp/images/val2017` |
 | `--class-names` | 必填 | 要替换的检测类名 |
-| `--tags` | 必填 | 本批 tag；改过框的样本另加 `changed` |
+| `--tags` | 必填 | 只给框有变更的样本；同时加 `changed` |
 | `--dry-run` | 关闭 | 只解析并写问题 CSV |
 
 ```bash
