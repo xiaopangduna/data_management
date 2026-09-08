@@ -2,7 +2,7 @@
 
 用 [FiftyOne](https://docs.voxel51.com) 管理深度学习数据：图片留在原目录，元数据（路径、tags、检测框）写入本机 FiftyOne 数据库（默认 `~/.fiftyone`）。
 
-当前已支持将 **YOLO 目录布局的 COCO** 导入为检测数据集。标注 UI、按筛选导出训练清单后续再加。
+当前已支持将 **YOLO 目录布局的 COCO** 导入为检测数据集，以及把筛出的样本导出给 **X-AnyLabeling** 重标后再写回 FiftyOne。
 
 ## 环境
 
@@ -27,7 +27,7 @@ source ~/.local/bin/env
 
 ## 用法
 
-图片留在原目录，FiftyOne 只存路径和元数据。无标注图用 `import_images.py` 入库，再用 `enrich_fiftyone_media.py` 补哈希和尺寸，然后用 `dedup_fiftyone.py` 去重，用 `attach_yolo_labels.py` 挂 YOLO 检测框，导出 CSV 后再用软链接生成训练用 YOLO 目录。带 YOLO 标签的 COCO 见下文「导入 YOLO → FiftyOne」。
+图片留在原目录，FiftyOne 只存路径和元数据。无标注图用 `import_images.py` 入库，再用 `enrich_fiftyone_media.py` 补哈希和尺寸，然后用 `dedup_fiftyone.py` 去重，用 `attach_yolo_labels.py` 挂 YOLO 检测框。需要重标时用 `export_xlabel.py` 导出软链和 JSON，在 X-AnyLabeling 中改完后用 `attach_xlabel_labels.py` 写回。导出 CSV 后再用软链接生成训练用 YOLO 目录。带 YOLO 标签的 COCO 见下文「导入 YOLO → FiftyOne」。
 
 ### Step：导入图片
 
@@ -255,6 +255,84 @@ uv run python scripts/attach_yolo_labels.py \
 
 成功时打印 `attach_done=true`。在 App 里点开有框的图，类名应为 `baby_head` 而不是 `0`。`dup_near` 的图同样会挂框。
 
+### Step：导出给 X-AnyLabeling 重标
+
+脚本：[scripts/export_xlabel.py](scripts/export_xlabel.py)
+
+从已有数据集筛出要重标的样本，写到**独立任务目录**（不要写回原图目录）：每张图一个软链，旁边一份 X-AnyLabeling JSON（已有 `ground_truth_detect` 会转成 rectangle）。不拷贝原图，不改 FiftyOne。先在 App 里给要导出的图打 tag（例如 `relabel`），再用 `--include-tags` 选出它们。
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--dataset-name` | 必填 | 已有 FiftyOne 数据集名 |
+| `--out-dir` | 必填 | 任务目录 |
+| `--include-tags` | 必填 | 带其中任一 tag 的样本才导出 |
+| `--exclude-tags` | `dup_near` | 排除这些 tag；`none` 表示不排除 |
+| `--class-names` | 无 | 检测框类名白名单：只有这些 `label` 写入 JSON；未指定则全部导出 |
+| `--dry-run` | 关闭 | 只规划并写问题 CSV，不建目录 |
+
+**先 dry-run：**
+
+```bash
+uv run python scripts/export_xlabel.py \
+  --dataset-name BBM08S_head \
+  --out-dir /mnt/nvme_data/data/relabel_BBM08S_head \
+  --include-tags relabel \
+  --class-names baby_head \
+  --dry-run
+```
+
+关注 `to_write` / `issues` / `csv_path`。确认后再去掉 `--dry-run`。目录结构：
+
+```
+<out-dir>/
+  manifest.csv
+  <relpath>.jpg     # 软链 → 原 filepath
+  <relpath>.json    # XLABEL，含 sample_id / fo_sample_id=
+```
+
+在 X-AnyLabeling 中打开 `<out-dir>`（或其中有图的子目录），**不要**打开 Save Image Data。类名须与 `--class-names` 一致。JSON 与图在同一层，一般不必再改 output 目录。
+
+问题 CSV 在 `tmp/export_xlabel_<数据集>.csv`。
+
+### Step：把 X-AnyLabeling 结果写回 FiftyOne
+
+脚本：[scripts/attach_xlabel_labels.py](scripts/attach_xlabel_labels.py)
+
+扫描任务目录里的 `*.json`（不跟随目录符号链接），用 JSON 里的 `sample_id`（或 `description` 中的 `fo_sample_id=`）对上 sample，**覆盖**这批的 `ground_truth_detect`。目录里没有的图不动。成功写入的样本会加 tag `xlabel`；JSON `checked=true` 时再加 `xlabel_checked`。不改 filepath、哈希。
+
+polygon 会先变成轴对齐外接框；`rotation` 等其它类型整份 JSON 拒绝写入。
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--dataset-name` | 必填 | 已有 FiftyOne 数据集名 |
+| `--task-dir` | 必填 | 上面的导出目录 |
+| `--class-names` | 必填 | 允许的类名白名单 |
+| `--no-overwrite` | 关闭 | 已有框与 JSON 不一致时不覆盖（与 YOLO 挂框相同） |
+| `--clear-empty` | 关闭 | JSON 无有效框时清空该图检测 |
+| `--dry-run` | 关闭 | 只解析并写问题 CSV |
+
+```bash
+uv run python scripts/attach_xlabel_labels.py \
+  --dataset-name BBM08S_head \
+  --task-dir /mnt/nvme_data/data/relabel_BBM08S_head \
+  --class-names baby_head \
+  --dry-run
+```
+
+关注 `matched` / `to_write` / `unchanged` / `issues`。确认后去掉 `--dry-run`。问题 CSV：`tmp/attach_xlabel_<数据集>.csv`。
+
+| issue | 含义 |
+|---|---|
+| `missing_sample_id` | JSON 里没有可解析的 sample id |
+| `orphan_label` | id 在库里不存在 |
+| `unknown_label` | 类名不在 `--class-names` |
+| `unsupported_shape` | 非 rectangle/polygon |
+| `empty_label` | 无有效框且未开 `--clear-empty` |
+| `box_mismatch` | 仅 `--no-overwrite` 时：与库中框不一致 |
+| `parse_error` / `missing_size` | JSON 损坏或没有宽高 |
+
+写回后若要训练，再跑「导出图片和标签的 csv」和 `csv_to_yolo.py`。
+
 ### Step：导出图片和标签的csv
 
 脚本：[scripts/export_training_csv.py](scripts/export_training_csv.py)
@@ -399,7 +477,7 @@ uv run fiftyone app launch coco2017
    可按每个检测框切小图，适合检查某类标得密不密、有没有明显错框。
 
 6. **不要在 App 里找的功能**  
-   选择本地 COCO 文件夹导入、导出 YOLO 训练目录、精细改框：导入已由脚本完成；导出与 CVAT/X-AnyLabeling 标注尚未接入。
+   选择本地 COCO 文件夹导入、导出 YOLO 训练目录、精细改框：导入与 YOLO 导出已由脚本完成；改框请用 X-AnyLabeling（见上文导出 / 写回两步），不要在 App 里当画框工具用。
 
 Python 里加载同一份库：
 
@@ -420,6 +498,8 @@ session = fo.launch_app(val)
 │   ├── enrich_fiftyone_media.py   # 补哈希与图片 metadata
 │   ├── dedup_fiftyone.py          # 精确删除 + 相似打 dup_near
 │   ├── attach_yolo_labels.py      # 按文件名把 YOLO txt 挂到已有库
+│   ├── export_xlabel.py           # 筛库 → 软链 + X-AnyLabeling JSON
+│   ├── attach_xlabel_labels.py    # 任务目录 JSON → 覆盖写回检测框
 │   ├── export_training_csv.py     # 筛库 → 训练总表 CSV + 分片
 │   ├── csv_to_yolo.py             # CSV → 软链接 YOLO 目录
 │   └── import_coco_yolo.py        # YOLO 布局 COCO → FiftyOne
