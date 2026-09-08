@@ -1,0 +1,4 @@
+uv run python scripts/import_images.py   --images-root /mnt/nvme_data/data/head_train_data/head_train_26w_val_0.3w/train/images   --dataset-name BBM08S_head   --tags head,train  
+uv run fiftyone datasets list
+uv run fiftyone app launch BBM08S_head
+uv run python scripts/enrich_fiftyone_media.py   --dataset-name BBM08S_head   --dry-run

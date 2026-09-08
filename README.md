@@ -27,7 +27,7 @@ source ~/.local/bin/env
 
 ## 用法
 
-图片留在原目录，FiftyOne 只存路径和元数据。无标注图用 `import_images.py` 入库，再用 `enrich_fiftyone_media.py` 补哈希和尺寸。带 YOLO 标签的 COCO 见下文「导入 YOLO → FiftyOne」。
+图片留在原目录，FiftyOne 只存路径和元数据。无标注图用 `import_images.py` 入库，再用 `enrich_fiftyone_media.py` 补哈希和尺寸，然后用 `dedup_fiftyone.py` 去重。带 YOLO 标签的 COCO 见下文「导入 YOLO → FiftyOne」。
 
 ### Step：导入图片
 
@@ -129,6 +129,74 @@ uv run fiftyone app launch baby_monitor_raw
 ```
 
 只算尺寸、不算哈希：`--hashes none`。只算哈希、不算尺寸：`--no-metadata`。
+
+### Step：去重
+
+脚本：[scripts/dedup_fiftyone.py](scripts/dedup_fiftyone.py)
+
+对**已存在**的数据集做内容去重，需先跑完「完善基础信息」（至少有 `sha256` / `phash`）。不创建或删除数据集，**不删磁盘文件**。
+
+两类重复分开处理：
+
+| 类型 | 判定 | 动作 |
+|---|---|---|
+| 精确重复 | `sha256` 相同，组内 ≥ 2 | 每组留 1 张，其余从数据集删除；写入记录 CSV |
+| 相似 | 64-bit `phash` 的 Hamming 距离 ≤ `--hamming-max`，组内 ≥ 2 | 留下的那张**不**打 `dup_near`；其余打 `dup_near`；整组写 `dup_group`（留下那张的 phash）和 `dup_of`（多余张指向留下那张的 `filepath`） |
+
+留下哪一张：`relpath` 字典序最小（无则用 `filepath`），其次分辨率更大，再其次 sample id 更小。每次都先删精确重复，再在剩余样本上做相似分组。已有 `dup_near` / `dup_group` 的样本不再改标记。
+
+**相似组与 `--hamming-max`：** 按 pHash 的 Hamming 距离做连通分量聚类。默认 **`2`**（64-bit 里最多差 2 bit），能收进轻微压缩/缩放差异，又比 4～8 更不容易把相邻视频帧整段落进 `dup_near`。若标记明显偏少可再加大；偏多则降到 `0`（仅 phash 完全相同）。唯一哈希很多时两两比较会变慢。
+
+先列出数据集：
+
+```bash
+uv run fiftyone datasets list
+```
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--dataset-name` | 必填 | 已有 FiftyOne 数据集名 |
+| `--hamming-max` | `2` | 相似组最大 Hamming 距离；`0` = phash 完全相同 |
+| `--dry-run` | 关闭 | 只统计并写 CSV，不删、不打标 |
+
+缺 `sha256` / `phash` 的样本跳过并计入报告。精确删除不受已有 tag 保护。
+
+**先 dry-run：**
+
+```bash
+uv run python scripts/dedup_fiftyone.py \
+  --dataset-name baby_monitor_raw \
+  --dry-run
+```
+
+关注 `exact_groups` / `exact_to_delete` / `near_groups` / `near_to_tag` / `csv_path`。每次运行（包括 dry-run）都会在**当前工作目录**覆盖写入 `dedup_<数据集>.csv`，避免聚类结果只打在终端上。表里包含精确组和相似组的**每一张**（含留下的那张）：
+
+| 列 | 说明 |
+|---|---|
+| `kind` | `exact` 或 `near` |
+| `action` | `keep` / `delete`（精确多余张）/ `tag_dup_near`（相似多余张） |
+| `dup_group` | 精确组为 sha256；相似组为留下那张的 phash |
+| `sample_id` / `filepath` / `relpath` | 当前这张 |
+| `sha256` / `phash` | 哈希 |
+| `kept_sample_id` / `kept_filepath` / `kept_relpath` | 该组留下的那张 |
+
+确认后再正式去重（会再算一遍并改库）：
+
+```bash
+uv run python scripts/dedup_fiftyone.py --dataset-name baby_monitor_raw
+```
+
+成功时打印 `dedup_done=true`。库记录删了可以靠这份 CSV 核对；原图仍在磁盘上。
+
+相似图在 App 里复核（只勾 `dup_near`，不要用别的 tag 做全选删除）：
+
+```bash
+uv run fiftyone app launch baby_monitor_raw
+```
+
+- 只勾 `dup_near`：看到的都是多余张，Select All 也删不到留下的那张
+- 看整组：点开一张候选，按 `dup_group` 筛选（含未打 tag 的主图）；看完清掉字段筛选
+- 其实该留：去掉 `dup_near`；确实多余：在网页删除 sample，或之后 `dataset.match_tags("dup_near").delete()`
 
 ### Step：更新标签
 ### Step：导出图片和标签的csv
@@ -250,6 +318,7 @@ session = fo.launch_app(val)
 ├── scripts/
 │   ├── import_images.py           # 无标注图片目录 → FiftyOne
 │   ├── enrich_fiftyone_media.py   # 补哈希与图片 metadata
+│   ├── dedup_fiftyone.py          # 精确删除 + 相似打 dup_near
 │   └── import_coco_yolo.py        # YOLO 布局 COCO → FiftyOne
 ├── src/data_management/      # 包代码（示例模块仍保留）
 ├── tests/
