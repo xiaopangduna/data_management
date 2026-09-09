@@ -1,8 +1,9 @@
 """Build a YOLO dataset directory from the exported master training CSV.
 
-Creates ``images/train`` symlinks to original files and writes ``labels/train``
-txt files plus ``data.yaml``. Reads only the master CSV, not part shards.
-Does not connect to FiftyOne.
+Creates ``images/`` symlinks to original files and writes ``labels/`` txt
+files plus ``data.yaml``. Empty ``labels`` cells become empty txt files
+(negatives). Class names in the CSV are mapped to ids here. Reads only the
+master CSV, not part shards. Does not connect to FiftyOne.
 """
 
 from __future__ import annotations
@@ -50,7 +51,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--class-names",
         required=True,
         type=class_names,
-        help="Comma-separated names written to data.yaml; must match export.",
+        help="Comma-separated names; order is YOLO class_id written to txt and data.yaml.",
     )
     parser.add_argument(
         "--dry-run",
@@ -66,35 +67,45 @@ def read_dicts(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
-def parse_label_lines(cell: str, names: list[str]) -> list[str] | None:
-    """Split the labels column into YOLO txt lines, or None if invalid."""
+def parse_label_lines(cell: str, names: list[str]) -> tuple[list[str] | None, str | None]:
+    """Turn CSV labels into YOLO txt lines.
+
+    Empty cell is a valid negative (``[], None``). Class names map to ids from
+    ``names``; last four tokens are ``cx cy w h``. On error: ``(None, key)``.
+    """
+    name_to_id = {name: index for index, name in enumerate(names)}
+    if not cell.strip():
+        return [], None
     lines: list[str] = []
     for part in cell.split(LABEL_SEPARATOR):
         text = part.strip()
         if not text:
             continue
         bits = text.split()
-        if len(bits) != 5:
-            return None
+        if len(bits) < 5:
+            return None, "invalid_box"
         try:
-            class_id = int(bits[0])
-            cx, cy, width, height = (float(item) for item in bits[1:])
+            cx, cy, width, height = (float(item) for item in bits[-4:])
         except ValueError:
-            return None
-        if not 0 <= class_id < len(names):
-            return None
+            return None, "invalid_box"
+        class_name = " ".join(bits[:-4])
+        if class_name not in name_to_id:
+            return None, "unknown_class"
         if width <= 0 or height <= 0:
-            return None
+            return None, "invalid_box"
+        class_id = name_to_id[class_name]
         lines.append(f"{class_id} {cx:.6f} {cy:.6f} {width:.6f} {height:.6f}")
-    return lines or None
+    if not lines:
+        return None, "invalid_box"
+    return lines, None
 
 
 def write_data_yaml(path: Path, dataset_root: Path, names: list[str]) -> None:
-    """Write Ultralytics data.yaml. val points at train until a split exists."""
+    """Write Ultralytics data.yaml. val points at images until a split exists."""
     lines = [
         f"path: {dataset_root.resolve().as_posix()}",
-        "train: images/train",
-        "val: images/train",
+        "train: images",
+        "val: images",
         "names:",
     ]
     for index, name in enumerate(names):
@@ -129,15 +140,17 @@ def run_build(
     counts = {
         "images": 0,
         "labels": 0,
+        "positives": 0,
+        "negatives": 0,
         "missing_file": 0,
-        "no_boxes": 0,
+        "unknown_class": 0,
         "invalid_box": 0,
         "dest_exists": 0,
         "relpath_collision": 0,
     }
     seen: set[str] = set()
-    image_root = out_dir / "images" / "train"
-    label_root = out_dir / "labels" / "train"
+    image_root = out_dir / "images"
+    label_root = out_dir / "labels"
     if not dry_run:
         image_root.mkdir(parents=True, exist_ok=True)
         label_root.mkdir(parents=True, exist_ok=True)
@@ -152,18 +165,19 @@ def run_build(
         if not source.is_file():
             counts["missing_file"] += 1
             continue
-        lines = parse_label_lines(row.get("labels", ""), names)
-        if lines is None:
-            counts["invalid_box"] += 1
-            continue
-        if not lines:
-            counts["no_boxes"] += 1
+        lines, error = parse_label_lines(row.get("labels", ""), names)
+        if error:
+            counts[error] += 1
             continue
         destination = image_root / relpath
         label_path = label_root / Path(relpath).with_suffix(".txt")
         if dry_run:
             counts["images"] += 1
             counts["labels"] += 1
+            if lines:
+                counts["positives"] += 1
+            else:
+                counts["negatives"] += 1
             continue
         destination.parent.mkdir(parents=True, exist_ok=True)
         label_path.parent.mkdir(parents=True, exist_ok=True)
@@ -171,7 +185,12 @@ def run_build(
         if conflict:
             counts["dest_exists"] += 1
             continue
-        label_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        if lines:
+            label_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            counts["positives"] += 1
+        else:
+            label_path.write_text("", encoding="utf-8")
+            counts["negatives"] += 1
         counts["images"] += 1
         counts["labels"] += 1
     if not dry_run:

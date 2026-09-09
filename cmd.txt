@@ -1,7 +1,50 @@
-uv run python scripts/import_images.py   --images-root /mnt/nvme_data/data/head_train_data/head_train_26w_val_0.3w/train/images   --dataset-name BBM08S_head   --tags head,train  
+# export FIFTYONE_DATABASE_DIR=/home/lee/huangwenhua/.fiftyone/mongo
+
+mkdir -p /home/lee/huangwenhua/.fiftyone/mongo
+# 系统未装 mongod 时用 FiftyOne 自带的（.venv/lib/.../fiftyone/db/bin/mongod）
+.venv/lib/python3.12/site-packages/fiftyone/db/bin/mongod --dbpath /home/lee/huangwenhua/.fiftyone/mongo --port 27018 --fork --logpath /home/lee/huangwenhua/.fiftyone/mongod.log
+export FIFTYONE_DATABASE_URI=mongodb://127.0.0.1:27018
+uv run fiftyone app launch BBM08S_head --port 5152
+
 uv run fiftyone datasets list
-uv run fiftyone app launch BBM08S_head
+
+# YOLO 叶子目录导入（库不存在则创建；各 split 分别跑）
+uv run python scripts/import_yolo.py \
+  --dataset-name BBM08S_head \
+  --images-dir /mnt/nvme_data/data/head_train_data/head_train_26w_val_0.3w/images/train \
+  --labels-dir /mnt/nvme_data/data/head_train_data/head_train_26w_val_0.3w/labels/train \
+  --class-names baby_head,adult_head \
+  --tags head,train \
+  --dry-run
+
+uv run python scripts/import_yolo.py \
+  --dataset-name BBM08S_head \
+  --images-dir /mnt/nvme_data/data/head_train_data/head_train_26w_val_0.3w/images/train \
+  --labels-dir /mnt/nvme_data/data/head_train_data/head_train_26w_val_0.3w/labels/train \
+  --class-names baby_head,adult_head \
+  --tags head,train
+
+uv run python scripts/import_yolo.py \
+  --dataset-name BBM08S_head \
+  --images-dir /mnt/nvme_data/data/head_train_data/head_train_26w_val_0.3w/images/train_bed \
+  --tags head,train_bed
+
+uv run python scripts/import_yolo.py \
+  --dataset-name BBM08S_head \
+  --images-dir /mnt/nvme_data/data/head_train_data/head_train_26w_val_0.3w/images/val_bed \
+  --labels-dir /mnt/nvme_data/data/head_train_data/head_train_26w_val_0.3w/labels/val_bed \
+  --class-names baby_head,adult_head \
+  --tags head,val_bed
+
+uv run python scripts/import_yolo.py \
+  --dataset-name BBM08S_head \
+  --images-dir /mnt/nvme_data/data/head_train_data/head_train_26w_val_0.3w/images/test_260904_head \
+  --labels-dir /mnt/nvme_data/data/head_train_data/head_train_26w_val_0.3w/labels/test_260904_head \
+  --class-names baby_head,adult_head \
+  --tags head,test
+
+uv run fiftyone datasets list
+uv run fiftyone app launch BBM08S_head --port 5152
 uv run python scripts/enrich_fiftyone_media.py   --dataset-name BBM08S_head   --dry-run
-uv run python scripts/dedup_fiftyone.py --dataset-name BBM08S_head 
-uv run python scripts/attach_yolo_labels.py --dataset-name BBM08S_head --labels-dir /mnt/nvme_data/data/head_train_data/head_train_26w_val_0.3w/train/labels --class-names baby_head
+uv run python scripts/dedup_fiftyone.py --dataset-name BBM08S_head
 uv run python scripts/export_training_csv.py --dataset-name BBM08S_head --include-tags head,train

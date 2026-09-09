@@ -27,7 +27,48 @@ source ~/.local/bin/env
 
 ## 用法
 
-图片留在原目录，FiftyOne 只存路径和元数据。无标注图用 `import_images.py` 入库，再用 `enrich_fiftyone_media.py` 补哈希和尺寸，然后用 `dedup_fiftyone.py` 去重，用 `attach_yolo_labels.py` 挂 YOLO 检测框。需要重标时用 `export_xlabel.py` 导出软链和 JSON，在 X-AnyLabeling 中改完后用 `attach_xlabel_labels.py` 写回。导出 CSV 后再用软链接生成训练用 YOLO 目录。带 YOLO 标签的 COCO 见下文「导入 YOLO → FiftyOne」。
+图片留在原目录，FiftyOne 只存路径和元数据。YOLO 叶子目录（`images/train` + `labels/train`）用 `import_yolo.py` 入库并挂框。无标注散图仍可用 `import_images.py`。再用 `enrich_fiftyone_media.py` 补哈希和尺寸，然后用 `dedup_fiftyone.py` 去重。需要重标时用 `export_xlabel.py` 导出软链和 JSON，在 X-AnyLabeling 中改完后用 `attach_xlabel_labels.py` 写回。导出 CSV 后再用软链接生成训练用 YOLO 目录。带 YOLO 标签的 COCO 见下文「导入 YOLO → FiftyOne」。
+
+### Step：导入 YOLO 叶子目录
+
+脚本：[scripts/import_yolo.py](scripts/import_yolo.py)
+
+把**一层**图片目录（以及可选的一层 YOLO txt 目录）写入 persistent 数据集。库不存在则创建，已存在则只追加还没有的图。不拷贝文件，不读 `dataset.yaml`。`--tags` 只打在**本批新图**上。已在库的 `filepath` 整张跳过（不改 tag、不补框）。
+
+`--images-dir` / `--labels-dir` 必须是叶子目录（不递归）。配对：同 stem 的 `foo.jpg` ↔ `foo.txt`。无 txt 或解析失败的图仍入库（负样本）。解析问题打 warning，不写 issues CSV。给旧图补框或覆盖框留给以后的 update。
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--dataset-name` | 必填 | FiftyOne 数据集名；不存在则新建 persistent |
+| `--images-dir` | 必填 | 叶子图片目录 |
+| `--tags` | 必填 | 只给新 sample，逗号分隔 |
+| `--labels-dir` | 无 | 叶子 YOLO txt 目录；不传则只加图 |
+| `--class-names` | 无 | 与 `--labels-dir` 必须同时出现；顺序 = YOLO `class_id` |
+| `--dry-run` | 关闭 | 只扫盘报数，不建库、不改库 |
+
+**先 dry-run：**
+
+```bash
+uv run python scripts/import_yolo.py \
+  --dataset-name BBM08S_head \
+  --images-dir /mnt/nvme_data/data/head_train_data/head_train_26w_val_0.3w/images/train \
+  --labels-dir /mnt/nvme_data/data/head_train_data/head_train_26w_val_0.3w/labels/train \
+  --class-names baby_head,adult_head \
+  --tags head,train \
+  --dry-run
+```
+
+关注 `new_samples` / `skipped_existing` / `unlabeled` / `parse_warnings`。子文件夹会被忽略并打 warning。确认后去掉 `--dry-run`。多个 split 各跑一次。没有 txt 的目录（如 `train_bed`）不要传 `--labels-dir`。
+
+成功时打印 `import_done=true`。每张**新**图写入：
+
+- `filepath`：解析符号链接后的绝对路径
+- `filename`：仅文件名（不必唯一）
+- `tags`：本次 `--tags`
+- `ground_truth`：有合法 txt 时写入（FiftyOne `Detections`，左上角相对 xywh）
+- `label_filepath`：对应 txt 的绝对路径（仅成功挂框时）
+
+本轮 `export_training_csv.py` 仍读 `ground_truth_detect`，用本脚本写入的 `ground_truth` 暂时不会出现在那份训练 CSV 里。
 
 ### Step：导入图片
 
@@ -365,9 +406,9 @@ uv run python scripts/export_training_csv.py \
 
 ```
 <out-dir>/
-  images/train/<relpath>   # 软链接 → filepath（不复制原图）
-  labels/train/<stem>.txt  # 由 labels 列写出；负样本为空文件
-  data.yaml                # names 与 --class-names 一致；暂无独立 val，val 指向 train
+  images/<relpath>         # 软链接 → filepath（不复制原图）
+  labels/<stem>.txt        # 由 labels 列写出；负样本为空文件
+  data.yaml                # names 与 --class-names 一致；暂无独立 val，val 指向 images
 ```
 
 `--class-names` 在这一步才变成 YOLO `class_id`（顺序即 id）。CSV 里未知类名的行会跳过。
@@ -496,6 +537,7 @@ session = fo.launch_app(val)
 ```
 .
 ├── scripts/
+│   ├── import_yolo.py             # YOLO 叶子目录 → FiftyOne（图 + 可选框）
 │   ├── import_images.py           # 无标注图片目录 → FiftyOne
 │   ├── enrich_fiftyone_media.py   # 补哈希与图片 metadata
 │   ├── dedup_fiftyone.py          # 精确删除 + 相似打 dup_near
