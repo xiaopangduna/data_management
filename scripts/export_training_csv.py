@@ -1,9 +1,11 @@
 """Export a training manifest from an existing FiftyOne dataset.
 
 Writes ``tmp/export_<dataset>.csv`` (one row per image, labels in one column)
-and readable shards ``tmp/export_<dataset>_part_XX.csv``. Default view: samples
-with detections, excluding tag ``dup_near``. Does not copy images or write
-YOLO txt files.
+and readable shards ``tmp/export_<dataset>_part_XX.csv``. Selects samples that
+have every ``--include-tags`` tag (intersection), then drops ``dup_near``
+unless ``--exclude-tags none``. Includes images with no boxes (negatives).
+Labels keep class names; ``csv_to_yolo.py`` assigns YOLO class ids. Does not
+copy images or write YOLO txt files.
 """
 
 from __future__ import annotations
@@ -55,11 +57,11 @@ def nonempty(value: str) -> str:
     return stripped
 
 
-def class_names(value: str) -> list[str]:
-    """Parse a comma-separated class list; index is YOLO class_id."""
+def include_tags(value: str) -> list[str]:
+    """Parse required include tags; at least one name. Matching is intersection."""
     names = [part.strip() for part in value.split(",") if part.strip()]
     if not names:
-        raise argparse.ArgumentTypeError("provide at least one class name")
+        raise argparse.ArgumentTypeError("provide at least one tag")
     return names
 
 
@@ -74,14 +76,14 @@ def tag_list(value: str) -> list[str]:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse CLI arguments for training CSV export."""
     parser = argparse.ArgumentParser(
-        description="Export a training CSV (plus readable parts) for YOLO generation."
+        description="Export a training CSV for samples that have every include tag."
     )
     parser.add_argument("--dataset-name", required=True, type=nonempty)
     parser.add_argument(
-        "--class-names",
+        "--include-tags",
         required=True,
-        type=class_names,
-        help="Comma-separated names; order is YOLO class_id (must match attach).",
+        type=include_tags,
+        help="Export samples that have all of these tags (comma-separated, intersection).",
     )
     parser.add_argument(
         "--exclude-tags",
@@ -111,35 +113,35 @@ def report_dir() -> Path:
     return path
 
 
-def filtered_view(dataset: fo.Dataset, exclude_tags: list[str]) -> fo.DatasetView:
-    """Samples with a detection field, minus excluded tags."""
-    if not dataset.has_field(DETECT_FIELD):
-        return dataset.limit(0)
-    view = dataset.exists(DETECT_FIELD)
+def filtered_view(
+    dataset: fo.Dataset,
+    include_tags: list[str],
+    exclude_tags: list[str],
+) -> fo.DatasetView:
+    """Samples that have every include tag, minus any excluded tag."""
+    view = dataset.match_tags(include_tags, bool=True, all=True)
     for tag in exclude_tags:
         view = view.match_tags(tag, bool=False)
     return view
 
 
-def to_yolo_line(class_id: int, bounding_box: list[float]) -> str | None:
-    """Convert FiftyOne top-left xywh to one YOLO txt line."""
+def to_label_line(class_name: str, bounding_box: list[float]) -> str | None:
+    """Convert FiftyOne top-left xywh to ``name cx cy w h`` (center-normalized)."""
     left, top, width, height = (float(item) for item in bounding_box)
     if width <= 0 or height <= 0:
         return None
     cx = round(left + width / 2.0, BOX_DECIMALS)
     cy = round(top + height / 2.0, BOX_DECIMALS)
     return (
-        f"{class_id} {cx:.{BOX_DECIMALS}f} {cy:.{BOX_DECIMALS}f} "
+        f"{class_name} {cx:.{BOX_DECIMALS}f} {cy:.{BOX_DECIMALS}f} "
         f"{round(width, BOX_DECIMALS):.{BOX_DECIMALS}f} {round(height, BOX_DECIMALS):.{BOX_DECIMALS}f}"
     )
 
 
 def collect_export_rows(
     view: fo.DatasetView,
-    names: list[str],
 ) -> tuple[list[dict[str, str]], list[dict[str, str]], int]:
-    """Build one row per image and any issue rows."""
-    name_to_id = {name: index for index, name in enumerate(names)}
+    """Build one row per image and any issue rows. Empty labels are negatives."""
     ids = [str(sample_id) for sample_id in view.values("id")]
     filepaths = view.values("filepath")
     if view.has_field("relpath"):
@@ -147,7 +149,10 @@ def collect_export_rows(
     else:
         relpaths = [None] * len(ids)
     tags_list = view.values("tags") if view.has_field("tags") else [None] * len(ids)
-    detections_list = view.values(DETECT_FIELD)
+    if view.has_field(DETECT_FIELD):
+        detections_list = view.values(DETECT_FIELD)
+    else:
+        detections_list = [None] * len(ids)
     rows: list[dict[str, str]] = []
     issues: list[dict[str, str]] = []
     seen_relpath: dict[str, str] = {}
@@ -170,18 +175,18 @@ def collect_export_rows(
         det_items = getattr(detections, "detections", None) or []
         lines: list[str] = []
         for detection in det_items:
-            class_name = str(detection.label)
-            if class_name not in name_to_id:
+            class_name = str(detection.label).strip()
+            if not class_name:
                 issues.append(
                     {
-                        "issue": "unknown_class",
+                        "issue": "invalid_box",
                         "sample_id": sample_id,
                         "relpath": relpath,
-                        "detail": class_name,
+                        "detail": "empty class name",
                     }
                 )
                 continue
-            formatted = to_yolo_line(name_to_id[class_name], list(detection.bounding_box))
+            formatted = to_label_line(class_name, list(detection.bounding_box))
             if formatted is None:
                 issues.append(
                     {
@@ -193,13 +198,13 @@ def collect_export_rows(
                 )
                 continue
             lines.append(formatted)
-        if not lines:
+        if det_items and not lines:
             issues.append(
                 {
-                    "issue": "no_boxes",
+                    "issue": "no_usable_boxes",
                     "sample_id": sample_id,
                     "relpath": relpath,
-                    "detail": "no usable detections after class mapping",
+                    "detail": "detections present but none had valid geometry",
                 }
             )
             continue
@@ -290,17 +295,20 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("Dataset does not exist: %s", args.dataset_name)
         return 1
     dataset = fo.load_dataset(args.dataset_name)
-    view = filtered_view(dataset, args.exclude_tags)
-    rows, issues, box_count = collect_export_rows(view, args.class_names)
+    view = filtered_view(dataset, args.include_tags, args.exclude_tags)
+    rows, issues, box_count = collect_export_rows(view)
     csv_info = write_export_csvs(dataset.name, rows, issues)
+    positives = sum(1 for row in rows if int(row["box_count"]) > 0)
     print_report(
         {
             "mode": "dry-run" if args.dry_run else "export",
             "dataset_name": dataset.name,
-            "class_names": ",".join(args.class_names),
+            "include_tags": ",".join(args.include_tags),
             "exclude_tags": ",".join(args.exclude_tags) if args.exclude_tags else "none",
             "view_samples": len(view),
             "images": len(rows),
+            "positives": positives,
+            "negatives": len(rows) - positives,
             "boxes": box_count,
             "issues": len(issues),
             **csv_info,

@@ -337,7 +337,7 @@ uv run python scripts/attach_xlabel_labels.py \
 
 脚本：[scripts/export_training_csv.py](scripts/export_training_csv.py)
 
-从 FiftyOne 当前库导出训练清单，**不拷贝图片、不写 YOLO txt**。默认只要有 `ground_truth_detect` 的样本，并排除 tag `dup_near`。精确去重已从库删除的图不会出现。
+从 FiftyOne 当前库按 tag 导出训练清单，**不拷贝图片、不写 YOLO txt**。`--include-tags` 为必填，逗号分隔，**必须同时带有这些 tag（交集）**才导出。默认再排除 `dup_near`。**无框图（负样本）一并导出**。精确去重已从库删除的图不会出现。类名写在 CSV 里，不在这里转成 YOLO `class_id`。
 
 写出（均在 `tmp/`）：
 
@@ -347,15 +347,15 @@ uv run python scripts/attach_xlabel_labels.py \
 | `export_<数据集>_part_01.csv` … | 与总表相同列，每 5000 张一份，方便 Excel 打开 |
 | `export_<数据集>_issues.csv` | 仅当确有跳过项时才写 |
 
-总表列：`sample_id,filepath,relpath,tags,box_count,labels`。`labels` 为该图全部 YOLO 行（`class_id cx cy w h`），多框用 `;` 连接。`--class-names` 必须与挂框时一致。`--exclude-tags none` 可把 `dup_near` 也导出。重跑会覆盖总表并重建分片，同时删掉旧的 `_images.csv` / `_boxes.csv`。
+总表列：`sample_id,filepath,relpath,tags,box_count,labels`。`labels` 为该图全部框（`class_name cx cy w h`，中心点相对坐标），多框用 `;` 连接；负样本 `box_count=0` 且 `labels` 为空。`--exclude-tags none` 可把 `dup_near` 也导出。重跑会覆盖总表并重建分片，同时删掉旧的 `_images.csv` / `_boxes.csv`。
 
 ```bash
 uv run python scripts/export_training_csv.py \
   --dataset-name BBM08S_head \
-  --class-names baby_head
+  --include-tags head,train
 ```
 
-关注 `images` / `boxes` / `issues` / `csv_path` / `part_files`。无框、未知类名、`relpath` 冲突的图不会进总表。
+关注 `images` / `positives` / `negatives` / `boxes` / `issues`。无框图会进总表。整图写不出任何有效框、或 `relpath` 冲突时才跳过。旧版带 `class_id` 的 CSV 需重新导出。
 
 ### Step：根据CSV生成数据集yolo格式
 
@@ -366,9 +366,11 @@ uv run python scripts/export_training_csv.py \
 ```
 <out-dir>/
   images/train/<relpath>   # 软链接 → filepath（不复制原图）
-  labels/train/<stem>.txt  # 由 labels 列写出
+  labels/train/<stem>.txt  # 由 labels 列写出；负样本为空文件
   data.yaml                # names 与 --class-names 一致；暂无独立 val，val 指向 train
 ```
+
+`--class-names` 在这一步才变成 YOLO `class_id`（顺序即 id）。CSV 里未知类名的行会跳过。
 
 ```bash
 uv run python scripts/csv_to_yolo.py \
