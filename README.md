@@ -289,11 +289,59 @@ uv run python scripts/export_xlabel.py \
 
 问题 CSV 在 `tmp/export_xlabel_<数据集>.csv`。
 
+### Step：将 YOLO 检测标注转换为 X-AnyLabeling
+
+脚本：[scripts/convert_yolo_to_xlabel.py](scripts/convert_yolo_to_xlabel.py)。只转换文件，不连接 FiftyOne。适用于已有 YOLO 标注统一通过 `attach_xlabel_labels.py` 写回，或转换后继续人工标注。
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--images-dir` | 必填 | 图片根目录 |
+| `--labels-dir` | 必填 | YOLO TXT 根目录，与图片保持相同子目录结构 |
+| `--class-names` | 必填 | 逗号分隔的完整类别列表，顺序对应 YOLO ID 0、1、2…；不允许空项或重复类别 |
+| `--out-dir` | 必填 | 独立输出目录，不能与输入目录相同或互相包含 |
+| `--export-media` | `none` | `none` 只输出 JSON；`symlink` 输出图片软链接；`copy` 复制图片 |
+| `--overwrite` | 关闭 | 覆盖已有输出文件；默认该样本任一目标文件存在就整份跳过 |
+| `--dry-run` | 关闭 | 校验并生成问题 CSV，不创建输出目录或写入图片、JSON |
+
+```bash
+uv run python scripts/convert_yolo_to_xlabel.py \
+  --images-dir /data/images \
+  --labels-dir /data/labels \
+  --class-names person,baby_head,car \
+  --out-dir /data/xanylabel \
+  --export-media none \
+  --dry-run
+```
+
+检查后去掉 `--dry-run` 生成文件。本机继续标注可选 `symlink`，交付其他机器可选 `copy`。例如 `images/train/a.jpg` 和 `labels/train/a.txt` 输出为 `xanylabel/train/a.json`；输出图片时图片也在 `xanylabel/train/`。`none` 的 JSON 使用原图绝对路径；另两种模式使用同目录图片文件名。JSON 不生成 sample ID，`checked` 为 false。
+
+只支持五列检测框 `class_id cx cy w h`，转成像素矩形角点。递归扫描 JPG/JPEG、PNG、BMP、WEBP、TIF/TIFF，不跟随目录软链接。**空 TXT 生成空 shapes，缺失 TXT 跳过**；回写空 shapes 会清空指定类别。非法类别、非有限值、非正框尺寸、越界框、不可读图片整份跳过；边界仅容忍并裁正 1e-6 的归一化舍入误差。同目录同名不同扩展名图片或重复 TXT 视为冲突，不猜测对应关系。
+
+终端输出 `images`、`label_files`、`to_write`、`written`、`empty_labels`、`skipped`、`issues`。问题报告固定写入当前目录的 `tmp/convert_yolo_to_xlabel_issues.csv`（每次覆盖，包括 dry-run）；存在跳过或错误时退出码为 1，其余为 0。`to_write` 是通过校验的计划数，`written` 是实际成功写入数。
+
+转换后统一写回，`--images-dir` 始终指向库中原图根目录，`--class-names` 此时表示允许覆盖的类别，可以是转换类别的子集：
+
+```bash
+uv run python scripts/attach_xlabel_labels.py \
+  --dataset-name my_dataset \
+  --label-dir /data/xanylabel \
+  --images-dir /data/images \
+  --class-names person,baby_head \
+  --tags label_import_260909 \
+  --dry-run
+```
+
+确认匹配结果后去掉 `--dry-run` 写入数据库。
+
 ### Step：把 X-AnyLabeling 结果写回 FiftyOne
 
 脚本：[scripts/attach_xlabel_labels.py](scripts/attach_xlabel_labels.py)
 
 扫描 `--label-dir` 下的 `*.json`（可含子目录，不跟随目录符号链接），用 JSON 里的 `sample_id`（或 `description` 中的 `fo_sample_id=`）对上 sample。**只替换 `--class-names` 中的类**：删掉库里这些类的旧框，再写入 JSON 里的框；其它类（如 `car`）不动。JSON 里没有这类框就清空这类。目录里没有 JSON 的图一律不动。不改 filepath、哈希。
+
+没有先导出的 JSON，可传 `--images-dir /绝对路径/images`：缺少 sample ID 时，使用图片绝对路径匹配库中的 `filepath`。JSON 的 `imagePath` 为绝对路径时直接使用；为相对路径时，按 `images-dir / JSON相对label-dir的父目录 / imagePath` 解析。例如 `labels/train/a.json` 的 `imagePath` 为 `a.jpg`，传入 `--label-dir /data/labels --images-dir /data/images`，会匹配 `/data/images/train/a.jpg`。仅收集本批 JSON 涉及的图片路径，按原始绝对路径及解析软链接后的路径查询库中的 `filepath`，每批最多 1,000 个；不遍历全库路径，不按文件名猜测，也不自动推断图片扩展名。如果库里存的是另一条未提供的软链接路径，不会扫描全库寻找别名，会报告未匹配。已有 sample ID 仍优先使用，ID 无效时不会回退。无需重新标注或修改 JSON。
+
+匹配 ID 和读取旧框也按每批 1,000 个样本处理。日志显示 JSON 解析进度、ID/路径查询进度、旧框读取进度及规划耗时，`--dry-run` 同样输出这些日志。
 
 `--tags` 和 `changed` **只打在框确实改过的样本上**。没改的图不打这两类 tag；若上次误打过，重跑会从这些图上拿掉。App 里勾批次 tag 就是这批改过的图。角点允许差 2 像素，仍算没改。
 
@@ -303,7 +351,9 @@ polygon 会先变成轴对齐外接框；`rotation` 等其它类型整份 JSON �
 |---|---|---|
 | `--dataset-name` | 必填 | 已有 FiftyOne 数据集名 |
 | `--label-dir` | 必填 | JSON 所在目录，如 `tmp/images/val2017` |
+| `--images-dir` | 无 | 图片根目录；缺少 sample ID 时启用绝对路径匹配，子目录结构需与标注对应 |
 | `--class-names` | 必填 | 要替换的检测类名 |
+| `--label-field` | `ground_truth` | 写入和比较的 FiftyOne `Detections` 字段 |
 | `--tags` | 必填 | 只给框有变更的样本；同时加 `changed` |
 | `--dry-run` | 关闭 | 只解析并写问题 CSV |
 
@@ -312,6 +362,7 @@ uv run python scripts/attach_xlabel_labels.py \
   --dataset-name coco2017 \
   --label-dir tmp/images/val2017 \
   --class-names person \
+  --label-field ground_truth \
   --tags label_person_260909 \
   --dry-run
 ```
@@ -320,13 +371,16 @@ uv run python scripts/attach_xlabel_labels.py \
 
 | issue | 含义 |
 |---|---|
-| `missing_sample_id` | JSON 里没有可解析的 sample id |
+| `missing_sample_id` | JSON 没有 sample ID，且未传 `--images-dir` |
+| `missing_image_path` | 路径匹配时 JSON 缺少 `imagePath` |
+| `orphan_image_path` | 图片绝对路径在库中没有对应样本 |
+| `ambiguous_image_path` | 图片绝对路径对应多个样本，跳过 |
 | `orphan_label` | id 在库里不存在 |
 | `sample_id_collision` | 两个 JSON 指向同一个 sample |
 | `unsupported_shape` | 非 rectangle/polygon |
 | `parse_error` / `missing_size` | JSON 损坏或没有宽高 |
 
-写回后若要训练，再用 `export_yolo_by_tags.py` 按 tag 导出 YOLO 目录。X-AnyLabeling 写回的框在 `ground_truth_detect`，导出时要传 `--label-field ground_truth_detect`。
+写回后若要训练，再用 `export_yolo_by_tags.py` 按 tag 导出 YOLO 目录。X-AnyLabeling 默认写入 `ground_truth`；如果写回时指定了其他字段，训练导出时应传入相同的 `--label-field`。
 
 ### Step：按标签并集导出 YOLO
 
@@ -353,7 +407,7 @@ uv run python scripts/export_yolo_by_tags.py \
   export_summary.json
 ```
 
-`--label-field` 默认 `ground_truth`（`import_yolo.py` 写入的字段）。`attach_yolo_labels.py` / `attach_xlabel_labels.py` / `import_coco_yolo.py` 写的是 `ground_truth_detect`，导出那些库时要显式指定。`--tags` 匹配任意一个标签，同时带多个标签的样本只导出一次。图片默认软链接，可用 `--export-media copy` 改为复制。`--classes` 固定类别 ID 顺序；不传则从本次结果收集并排序。多次导出要一致 ID 时传入相同完整列表。
+`--label-field` 默认 `ground_truth`（`import_yolo.py` 写入的字段）。`attach_xlabel_labels.py` 默认也写入 `ground_truth`，可用 `--label-field` 选择其他字段。`attach_yolo_labels.py` 和 `import_coco_yolo.py` 写入 `ground_truth_detect`，导出这些库时要显式指定。`--tags` 匹配任意一个标签，同时带多个标签的样本只导出一次。图片默认软链接，可用 `--export-media copy` 改为复制。`--classes` 固定类别 ID 顺序；不传则从本次结果收集并排序。多次导出要一致 ID 时传入相同完整列表。
 
 脚本拒绝不存在的标签、空筛选结果、缺失图片、非检测标注字段及非空输出目录。显式类别列表必须覆盖筛选结果中的全部类别。导出失败可能留下部分文件，应换新的空目录重试。App 里改过 tag 或删过图之后应重新导出，不要手工改生成目录。
 

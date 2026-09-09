@@ -1,7 +1,8 @@
 """Attach X-AnyLabeling sidecar JSON onto an existing FiftyOne dataset.
 
 Reads ``*.json`` under ``--label-dir``. Matches ``sample_id`` from the JSON
-(or ``description`` / ``fo_sample_id=``). Overwrites detections whose labels are in ``--class-names`` (drop old boxes
+(or ``description`` / ``fo_sample_id=``), falling back to absolute image paths
+with ``--images-dir`` when the ID is missing. Overwrites detections whose labels are in ``--class-names`` (drop old boxes
 of those classes, then write JSON boxes). Other classes on the sample are
 kept. Empty JSON for those classes clears them. Adds ``--tags``. Does not
 create or delete datasets, and does not change filepaths or hashes.
@@ -15,8 +16,9 @@ import json
 import logging
 import os
 import sys
+import time
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 warnings.filterwarnings(
@@ -25,17 +27,20 @@ warnings.filterwarnings(
     module=r"glob2(\.|$)",
 )
 
+from bson import ObjectId
+
 import fiftyone as fo
 
 logger = logging.getLogger(__name__)
 
-DETECT_FIELD = "ground_truth_detect"
+DEFAULT_LABEL_FIELD = "ground_truth"
 LABEL_RELPATH_FIELD = "label_relpath"
 BOX_DECIMALS = 6
 REPORT_SUBDIR = "tmp"
 SAMPLE_ID_PREFIX = "fo_sample_id="
 XLABEL_CHECKED_TAG = "xlabel_checked"
 CHANGED_TAG = "changed"
+QUERY_BATCH_SIZE = 1000
 PIXEL_TOL = 2
 SKIP_JSON_NAMES = frozenset({"manifest.json"})
 SUPPORTED_SHAPES = frozenset({"rectangle", "polygon"})
@@ -58,6 +63,7 @@ class ParsedBoxes:
     checked: bool
     width: int
     height: int
+    image_path: str = ""
 
 
 @dataclass
@@ -109,10 +115,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Directory of sidecar JSON (e.g. tmp/images/val2017). Walks subfolders.",
     )
     parser.add_argument(
+        "--images-dir",
+        type=Path,
+        help="Image root for path matching when sample_id is missing; mirrors label-dir subfolders.",
+    )
+    parser.add_argument(
         "--class-names",
         required=True,
         type=class_names,
         help="Classes to replace from JSON; other detection labels on the sample are kept.",
+    )
+    parser.add_argument(
+        "--label-field",
+        default=DEFAULT_LABEL_FIELD,
+        type=nonempty,
+        help=f"FiftyOne Detections field to update (default: {DEFAULT_LABEL_FIELD}).",
     )
     parser.add_argument(
         "--tags",
@@ -311,6 +328,7 @@ def parse_xlabel_file(
             checked=checked,
             width=width,
             height=height,
+            image_path=str(data.get("imagePath") or "").strip(),
         ),
         issues,
     )
@@ -342,17 +360,22 @@ def existing_box_tuples(value: object) -> tuple[tuple[str, tuple[float, float, f
 
 
 def load_existing_boxes(
-    dataset: fo.Dataset, sample_ids: list[str]
+    dataset: fo.Dataset,
+    sample_ids: list[str],
+    label_field: str = DEFAULT_LABEL_FIELD,
 ) -> dict[str, tuple[tuple[str, tuple[float, float, float, float]], ...] | None]:
     """Load current detection boxes for the given samples."""
     if not sample_ids:
         return {}
-    if not dataset.has_field(DETECT_FIELD):
+    if not dataset.has_field(label_field):
         return {sample_id: None for sample_id in sample_ids}
-    view = dataset.select(sample_ids)
-    ids = [str(sample_id) for sample_id in view.values("id")]
-    values = view.values(DETECT_FIELD)
-    return {sample_id: existing_box_tuples(value) for sample_id, value in zip(ids, values)}
+    existing = {}
+    for offset in range(0, len(sample_ids), QUERY_BATCH_SIZE):
+        view = dataset.select(sample_ids[offset:offset + QUERY_BATCH_SIZE])
+        ids, values = view.values(["id", label_field])
+        existing.update({str(sid): existing_box_tuples(value) for sid, value in zip(ids, values)})
+        logger.info("Read existing boxes %d/%d", min(offset + QUERY_BATCH_SIZE, len(sample_ids)), len(sample_ids))
+    return existing
 
 
 def boxes_for_classes(
@@ -438,23 +461,74 @@ def build_attach_plan(
     dataset: fo.Dataset,
     label_dir: Path,
     names: list[str],
+    images_dir: Path | None = None,
+    label_field: str = DEFAULT_LABEL_FIELD,
 ) -> AttachPlan:
     """Match JSON files to samples and decide writes vs issue rows."""
     plan = AttachPlan()
     allowed = set(names)
     json_paths = iter_json_paths(label_dir)
     plan.label_files = len(json_paths)
-    dataset_ids = {str(sample_id) for sample_id in dataset.values("id")}
+    started = time.monotonic()
+    logger.info("Found %d JSON files; parsing labels", len(json_paths))
+    parsed_files = []
+    requested_ids = set()
+    requested_paths = set()
+    paths_by_label = {}
+    for index, json_path in enumerate(json_paths, 1):
+        parsed, parse_issues = parse_xlabel_file(json_path, label_dir, allowed)
+        plan.issues.extend(parse_issues)
+        if parsed is not None:
+            parsed_files.append(parsed)
+            if parsed.sample_id:
+                if ObjectId.is_valid(parsed.sample_id):
+                    requested_ids.add(parsed.sample_id)
+            elif images_dir is not None and parsed.image_path:
+                path = Path(parsed.image_path).expanduser()
+                if not path.is_absolute():
+                    path = images_dir / Path(parsed.label_relpath).parent / path
+                # Query only this batch's lexical and canonical paths, never resolve the entire dataset.
+                candidates = {os.path.abspath(path), str(path.resolve())}
+                paths_by_label[parsed.label_relpath] = candidates
+                requested_paths.update(candidates)
+        if index % QUERY_BATCH_SIZE == 0:
+            logger.info("Parsed JSON %d/%d", index, len(json_paths))
+    logger.info("Parsed labels in %.2fs; querying %d IDs and %d paths",
+                time.monotonic() - started, len(requested_ids), len(requested_paths))
+    dataset_ids = set()
+    path_ids: dict[str, set[str]] = {}
+    ids = sorted(requested_ids)
+    for offset in range(0, len(ids), QUERY_BATCH_SIZE):
+        found = dataset.select(ids[offset:offset + QUERY_BATCH_SIZE]).values("id")
+        dataset_ids.update(str(sid) for sid in found)
+        logger.info("Queried IDs %d/%d", min(offset + QUERY_BATCH_SIZE, len(ids)), len(ids))
+    paths = sorted(requested_paths)
+    for offset in range(0, len(paths), QUERY_BATCH_SIZE):
+        view = dataset.match({"filepath": {"$in": paths[offset:offset + QUERY_BATCH_SIZE]}})
+        found_ids, found_paths = view.values(["id", "filepath"])
+        for sid, filepath in zip(found_ids, found_paths):
+            sid = str(sid)
+            path_ids.setdefault(filepath, set()).add(sid)
+            dataset_ids.add(sid)
+        logger.info("Queried paths %d/%d", min(offset + QUERY_BATCH_SIZE, len(paths)), len(paths))
     pending: list[ParsedBoxes] = []
     matched_ids: list[str] = []
     seen_ids: dict[str, str] = {}
-    for json_path in json_paths:
-        parsed, parse_issues = parse_xlabel_file(json_path, label_dir, allowed)
-        if parse_issues:
-            plan.issues.extend(parse_issues)
-            continue
-        if parsed is None:
-            continue
+    for parsed in parsed_files:
+        if not parsed.sample_id and images_dir is not None:
+            if not parsed.image_path:
+                plan.issues.append(issue_row("missing_image_path", label_relpath=parsed.label_relpath))
+                continue
+            paths = paths_by_label[parsed.label_relpath]
+            candidates = set().union(*(path_ids.get(path, set()) for path in paths))
+            if len(candidates) != 1:
+                plan.issues.append(issue_row(
+                    "orphan_image_path" if not candidates else "ambiguous_image_path",
+                    label_relpath=parsed.label_relpath,
+                    detail=", ".join(sorted(paths)),
+                ))
+                continue
+            parsed = replace(parsed, sample_id=next(iter(candidates)))
         if not parsed.sample_id:
             plan.issues.append(
                 issue_row("missing_sample_id", label_relpath=parsed.label_relpath)
@@ -483,7 +557,8 @@ def build_attach_plan(
         plan.matched += 1
         matched_ids.append(parsed.sample_id)
         pending.append(parsed)
-    existing = load_existing_boxes(dataset, matched_ids)
+    logger.info("Matched %d samples; loading existing boxes", plan.matched)
+    existing = load_existing_boxes(dataset, matched_ids, label_field)
     for parsed in pending:
         current = existing.get(parsed.sample_id)
         new_boxes = parsed.boxes
@@ -492,6 +567,8 @@ def build_attach_plan(
             plan.to_tag[parsed.sample_id] = parsed
             continue
         plan.to_write[parsed.sample_id] = parsed
+    logger.info("Plan finished in %.2fs: changed=%d unchanged=%d issues=%d",
+                time.monotonic() - started, len(plan.to_write), plan.unchanged, len(plan.issues))
     return plan
 
 
@@ -557,6 +634,7 @@ def apply_writes(
     to_write: dict[str, ParsedBoxes],
     extra_tags: list[str],
     names: set[str],
+    label_field: str = DEFAULT_LABEL_FIELD,
 ) -> int:
     """Replace --class-names boxes and add batch tags. Returns samples updated."""
     if not to_write:
@@ -564,8 +642,8 @@ def apply_writes(
     written = 0
     for sample in dataset.select(list(to_write)).iter_samples(autosave=True):
         parsed = to_write[str(sample.id)]
-        current = sample[DETECT_FIELD] if dataset.has_field(DETECT_FIELD) else None
-        sample[DETECT_FIELD] = replace_class_detections(current, parsed.boxes, names)
+        current = sample[label_field] if dataset.has_field(label_field) else None
+        sample[label_field] = replace_class_detections(current, parsed.boxes, names)
         sample[LABEL_RELPATH_FIELD] = parsed.label_relpath
         sample.tags = merge_tags(
             sample.tags, extra_tags, parsed.checked, boxes_changed=True
@@ -604,9 +682,11 @@ def run_attach(
     names: list[str],
     extra_tags: list[str],
     dry_run: bool,
+    images_dir: Path | None = None,
+    label_field: str = DEFAULT_LABEL_FIELD,
 ) -> int:
     """Plan, write the issue CSV, and optionally apply detections."""
-    plan = build_attach_plan(dataset, label_dir, names)
+    plan = build_attach_plan(dataset, label_dir, names, images_dir, label_field)
     csv_path = issue_csv_path(dataset.name)
     write_issue_csv(csv_path, plan.issues)
     logger.info("Wrote issue CSV %s rows=%s", csv_path, len(plan.issues))
@@ -616,6 +696,7 @@ def run_attach(
             "dataset_name": dataset.name,
             "label_dir": str(label_dir),
             "class_names": ",".join(names),
+            "label_field": label_field,
             "tags": ",".join(extra_tags),
             "label_files": plan.label_files,
             "matched": plan.matched,
@@ -627,7 +708,9 @@ def run_attach(
     )
     if dry_run:
         return 0
-    written = apply_writes(dataset, plan.to_write, extra_tags, set(names))
+    written = apply_writes(
+        dataset, plan.to_write, extra_tags, set(names), label_field
+    )
     tagged = apply_tags(dataset, plan.to_tag, extra_tags)
     dataset.save()
     print_report({"written": written, "unchanged_tags_cleared": tagged, "attach_done": "true"})
@@ -645,6 +728,10 @@ def main(argv: list[str] | None = None) -> int:
     if not label_dir.is_dir():
         logger.error("Not a directory: %s", label_dir)
         return 1
+    images_dir = args.images_dir.expanduser().resolve() if args.images_dir else None
+    if images_dir is not None and not images_dir.is_dir():
+        logger.error("Not a directory: %s", images_dir)
+        return 1
     if not fo.dataset_exists(args.dataset_name):
         logger.error("Dataset does not exist: %s", args.dataset_name)
         return 1
@@ -655,6 +742,8 @@ def main(argv: list[str] | None = None) -> int:
         args.class_names,
         extra_tags=args.tags,
         dry_run=args.dry_run,
+        images_dir=images_dir,
+        label_field=args.label_field,
     )
 
 
