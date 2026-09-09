@@ -47,4 +47,9 @@ uv run fiftyone datasets list
 uv run fiftyone app launch BBM08S_head --port 5152
 uv run python scripts/enrich_fiftyone_media.py   --dataset-name BBM08S_head   --dry-run
 uv run python scripts/dedup_fiftyone.py --dataset-name BBM08S_head
-uv run python scripts/export_training_csv.py --dataset-name BBM08S_head --include-tags head,train
+uv run python scripts/export_yolo_by_tags.py \
+  --dataset BBM08S_head \
+  --output-dir /mnt/nvme_data/data/head_train_data/BBM08S_head_yolo \
+  --tags train \
+  --classes baby_head,adult_head \
+  --dry-run

@@ -27,7 +27,7 @@ source ~/.local/bin/env
 
 ## 用法
 
-图片留在原目录，FiftyOne 只存路径和元数据。YOLO 叶子目录（`images/train` + `labels/train`）用 `import_yolo.py` 入库并挂框；无标注叶子目录不传 `--labels-dir`。再用 `enrich_fiftyone_media.py` 补哈希和尺寸，然后用 `dedup_fiftyone.py` 去重。需要重标时用 `export_xlabel.py` 导出软链和 JSON，在 X-AnyLabeling 中改完后用 `attach_xlabel_labels.py` 写回。导出 CSV 后再用软链接生成训练用 YOLO 目录。带 YOLO 标签的 COCO 见下文「导入 YOLO → FiftyOne」。
+图片留在原目录，FiftyOne 只存路径和元数据。YOLO 叶子目录（`images/train` + `labels/train`）用 `import_yolo.py` 入库并挂框；无标注叶子目录不传 `--labels-dir`。再用 `enrich_fiftyone_media.py` 补哈希和尺寸，然后用 `dedup_fiftyone.py` 去重。需要重标时用 `export_xlabel.py` 导出软链和 JSON，在 X-AnyLabeling 中改完后用 `attach_xlabel_labels.py` 写回。训练导出用 `export_yolo_by_tags.py` 按 tag 写出 YOLO 目录。带 YOLO 标签的 COCO 见下文「导入 YOLO → FiftyOne」。
 
 ### Step：导入 YOLO 叶子目录
 
@@ -68,7 +68,7 @@ uv run python scripts/import_yolo.py \
 - `ground_truth`：有合法 txt 时写入（FiftyOne `Detections`，左上角相对 xywh）
 - `label_filepath`：对应 txt 的绝对路径（仅成功挂框时）
 
-本轮 `export_training_csv.py` 仍读 `ground_truth_detect`，用本脚本写入的 `ground_truth` 暂时不会出现在那份训练 CSV 里。
+训练导出用 `export_yolo_by_tags.py`，默认读本脚本写入的 `ground_truth`。
 
 ### Step：完善基础信息
 
@@ -326,56 +326,36 @@ uv run python scripts/attach_xlabel_labels.py \
 | `unsupported_shape` | 非 rectangle/polygon |
 | `parse_error` / `missing_size` | JSON 损坏或没有宽高 |
 
-写回后若要训练，再跑「导出图片和标签的 csv」和 `csv_to_yolo.py`。
+写回后若要训练，再用 `export_yolo_by_tags.py` 按 tag 导出 YOLO 目录。X-AnyLabeling 写回的框在 `ground_truth_detect`，导出时要传 `--label-field ground_truth_detect`。
 
-### Step：导出图片和标签的csv
+### Step：按标签并集导出 YOLO
 
-脚本：[scripts/export_training_csv.py](scripts/export_training_csv.py)
+脚本：[scripts/export_yolo_by_tags.py](scripts/export_yolo_by_tags.py)
 
-从 FiftyOne 当前库按 tag 导出训练清单，**不拷贝图片、不写 YOLO txt**。`--include-tags` 为必填，逗号分隔，**必须同时带有这些 tag（交集）**才导出。默认再排除 `dup_near`。**无框图（负样本）一并导出**。精确去重已从库删除的图不会出现。类名写在 CSV 里，不在这里转成 YOLO `class_id`。
-
-写出（均在 `tmp/`）：
-
-| 文件 | 内容 |
-|---|---|
-| `export_<数据集>.csv` | **总表**，一行一张图；`csv_to_yolo.py` 只读这份 |
-| `export_<数据集>_part_01.csv` … | 与总表相同列，每 5000 张一份，方便 Excel 打开 |
-| `export_<数据集>_issues.csv` | 仅当确有跳过项时才写 |
-
-总表列：`sample_id,filepath,relpath,tags,box_count,labels`。`labels` 为该图全部框（`class_name cx cy w h`，中心点相对坐标），多框用 `;` 连接；负样本 `box_count=0` 且 `labels` 为空。`--exclude-tags none` 可把 `dup_near` 也导出。重跑会覆盖总表并重建分片，同时删掉旧的 `_images.csv` / `_boxes.csv`。
+从已有数据集按 tag **并集**（任一即可）筛样本，写出一份 YOLO 检测目录。不按标签拆 train/val/test，也不隐式排除 `dup_near`。无框图保留为负样本。`--output-dir` 必须不存在或为空。
 
 ```bash
-uv run python scripts/export_training_csv.py \
-  --dataset-name BBM08S_head \
-  --include-tags head,train
-```
-
-关注 `images` / `positives` / `negatives` / `boxes` / `issues`。无框图会进总表。整图写不出任何有效框、或 `relpath` 冲突时才跳过。旧版带 `class_id` 的 CSV 需重新导出。
-
-### Step：根据CSV生成数据集yolo格式
-
-脚本：[scripts/csv_to_yolo.py](scripts/csv_to_yolo.py)
-
-只读**总表**，不读 part 分片，**不连接 FiftyOne**。在 `--out-dir` 下生成：
-
-```
-<out-dir>/
-  images/<relpath>         # 软链接 → filepath（不复制原图）
-  labels/<stem>.txt        # 由 labels 列写出；负样本为空文件
-  data.yaml                # names 与 --class-names 一致；暂无独立 val，val 指向 images
-```
-
-`--class-names` 在这一步才变成 YOLO `class_id`（顺序即 id）。CSV 里未知类名的行会跳过。
-
-```bash
-uv run python scripts/csv_to_yolo.py \
-  --csv tmp/export_BBM08S_head.csv \
-  --out-dir /mnt/nvme_data/data/head_train_data/BBM08S_head_yolo \
-  --class-names baby_head \
+uv run python scripts/export_yolo_by_tags.py \
+  --dataset BBM08S_head \
+  --output-dir /mnt/nvme_data/data/head_train_data/BBM08S_head_yolo \
+  --tags train \
+  --classes baby_head,adult_head \
   --dry-run
 ```
 
-确认 `images` / `missing_file` 后去掉 `--dry-run` 正式建链。训练请把 `data.yaml` 的 `path` 指到这个新目录，不要再用原来的 `head_train_26w_val_0.3w`。App 里改过 tag 或删过图之后，应重新导出 CSV 再生成，不要手工改生成目录。
+确认统计后去掉 `--dry-run`。写出：
+
+```
+<output-dir>/
+  images/train/            # 默认软链到原图
+  labels/train/            # YOLO txt；负样本为空文件
+  dataset.yaml
+  export_summary.json
+```
+
+`--label-field` 默认 `ground_truth`（`import_yolo.py` 写入的字段）。`attach_yolo_labels.py` / `attach_xlabel_labels.py` / `import_coco_yolo.py` 写的是 `ground_truth_detect`，导出那些库时要显式指定。`--tags` 匹配任意一个标签，同时带多个标签的样本只导出一次。图片默认软链接，可用 `--export-media copy` 改为复制。`--classes` 固定类别 ID 顺序；不传则从本次结果收集并排序。多次导出要一致 ID 时传入相同完整列表。
+
+脚本拒绝不存在的标签、空筛选结果、缺失图片、非检测标注字段及非空输出目录。显式类别列表必须覆盖筛选结果中的全部类别。导出失败可能留下部分文件，应换新的空目录重试。App 里改过 tag 或删过图之后应重新导出，不要手工改生成目录。
 
 ## YOLO 数据目录
 
@@ -497,8 +477,7 @@ session = fo.launch_app(val)
 │   ├── attach_yolo_labels.py      # 按文件名把 YOLO txt 挂到已有库
 │   ├── export_xlabel.py           # 筛库 → 软链 + X-AnyLabeling JSON
 │   ├── attach_xlabel_labels.py    # JSON 目录 → 覆盖写回检测框并打批次 tag
-│   ├── export_training_csv.py     # 筛库 → 训练总表 CSV + 分片
-│   ├── csv_to_yolo.py             # CSV → 软链接 YOLO 目录
+│   ├── export_yolo_by_tags.py     # 按 tag 并集 → YOLO 目录
 │   └── import_coco_yolo.py        # YOLO 布局 COCO → FiftyOne
 ├── src/data_management/      # 包代码（示例模块仍保留）
 ├── tests/
@@ -523,28 +502,3 @@ uv add --dev package_name
 uv sync
 uv lock
 ```
-
-## 按标签并集直接导出 YOLO
-
-```bash
-uv run python scripts/export_yolo_by_tags.py \
-  --dataset baby_monitor \
-  --label-field ground_truth_detect \
-  --output-dir ./exports/head_test \
-  --tags head,test \
-  --classes baby_head,adult_head
-```
-
-`--tags` 匹配样本 tags 中的任意一个标签（并集），同时带多个标签的样本仅导出一次。
-全部结果统一写入 `images/train/`、`labels/train/`，同时生成 `dataset.yaml`
-和 `export_summary.json`；不按标签拆分训练集、验证集或测试集，也不隐式排除其他标签。
-图片默认软链接到原图，请保留原图位置；可用 `--export-media copy` 改为复制。
-
-`--label-field` 默认 `ground_truth`，本项目通常需显式指定 `ground_truth_detect`。
-可用 `--classes baby,adult` 固定类别 ID 顺序；否则从本次筛选结果收集类别并排序。
-多次导出需要一致类别 ID 时，请传入相同的完整类别列表。
-`--dry-run` 执行检查并打印统计，不创建目录或文件。
-
-脚本拒绝不存在的标签、空筛选结果、缺失图片、非检测标注字段及非空输出目录。
-缺失标注（字段值为 `None`）和空的 `Detections` 均保留为负样本，不修改数据库中的原始标注。显式指定的类别列表必须覆盖筛选结果中的全部类别。
-导出失败可能留下部分文件，应检查后使用新的空目录重试。
