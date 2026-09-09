@@ -27,7 +27,7 @@ source ~/.local/bin/env
 
 ## 用法
 
-图片留在原目录，FiftyOne 只存路径和元数据。YOLO 叶子目录（`images/train` + `labels/train`）用 `import_yolo.py` 入库并挂框。无标注散图仍可用 `import_images.py`。再用 `enrich_fiftyone_media.py` 补哈希和尺寸，然后用 `dedup_fiftyone.py` 去重。需要重标时用 `export_xlabel.py` 导出软链和 JSON，在 X-AnyLabeling 中改完后用 `attach_xlabel_labels.py` 写回。导出 CSV 后再用软链接生成训练用 YOLO 目录。带 YOLO 标签的 COCO 见下文「导入 YOLO → FiftyOne」。
+图片留在原目录，FiftyOne 只存路径和元数据。YOLO 叶子目录（`images/train` + `labels/train`）用 `import_yolo.py` 入库并挂框；无标注叶子目录不传 `--labels-dir`。再用 `enrich_fiftyone_media.py` 补哈希和尺寸，然后用 `dedup_fiftyone.py` 去重。需要重标时用 `export_xlabel.py` 导出软链和 JSON，在 X-AnyLabeling 中改完后用 `attach_xlabel_labels.py` 写回。导出 CSV 后再用软链接生成训练用 YOLO 目录。带 YOLO 标签的 COCO 见下文「导入 YOLO → FiftyOne」。
 
 ### Step：导入 YOLO 叶子目录
 
@@ -35,7 +35,7 @@ source ~/.local/bin/env
 
 把**一层**图片目录（以及可选的一层 YOLO txt 目录）写入 persistent 数据集。库不存在则创建，已存在则只追加还没有的图。不拷贝文件，不读 `dataset.yaml`。`--tags` 只打在**本批新图**上。已在库的 `filepath` 整张跳过（不改 tag、不补框）。
 
-`--images-dir` / `--labels-dir` 必须是叶子目录（不递归）。配对：同 stem 的 `foo.jpg` ↔ `foo.txt`。无 txt 或解析失败的图仍入库（负样本）。解析问题打 warning，不写 issues CSV。给旧图补框或覆盖框留给以后的 update。
+`--images-dir` / `--labels-dir` 必须是叶子目录（不递归）。配对：同 stem 的 `foo.jpg` ↔ `foo.txt`。无 txt 或空 txt 的图仍入库（负样本），只计入 `unlabeled`，不打 warning。格式错误等写入 `tmp/import_yolo_<数据集>.csv`。给旧图补框或覆盖框留给以后的 update。
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
@@ -58,7 +58,7 @@ uv run python scripts/import_yolo.py \
   --dry-run
 ```
 
-关注 `new_samples` / `skipped_existing` / `unlabeled` / `parse_warnings`。子文件夹会被忽略并打 warning。确认后去掉 `--dry-run`。多个 split 各跑一次。没有 txt 的目录（如 `train_bed`）不要传 `--labels-dir`。
+关注 `new_samples` / `skipped_existing` / `unlabeled` / `parse_errors`。有 `issues` 时看 `csv_path`。确认后去掉 `--dry-run`。多个 split 各跑一次。没有 txt 的目录（如 `train_bed`）不要传 `--labels-dir`。
 
 成功时打印 `import_done=true`。每张**新**图写入：
 
@@ -69,52 +69,6 @@ uv run python scripts/import_yolo.py \
 - `label_filepath`：对应 txt 的绝对路径（仅成功挂框时）
 
 本轮 `export_training_csv.py` 仍读 `ground_truth_detect`，用本脚本写入的 `ground_truth` 暂时不会出现在那份训练 CSV 里。
-
-### Step：导入图片
-
-脚本：[scripts/import_images.py](scripts/import_images.py)
-
-从本地目录创建**持久化**图片数据集。只扫描图片、写入路径和 tags，不拷贝文件，也不推断类别或 train/val 划分。同名数据集已存在时拒绝写入（不覆盖、不追加）。
-
-| 参数 | 默认 | 说明 |
-|---|---|---|
-| `--images-root` | 必填 | 图片根目录，支持相对路径及 `~` |
-| `--dataset-name` | 必填 | 新数据集名称 |
-| `--tags` | 无 | 统一添加的标签，逗号分隔 |
-| `--recursive` / `--no-recursive` | 递归 | 是否扫描子目录；不遍历目录符号链接 |
-| `--extensions` | `.jpg,.jpeg,.png,.webp,.bmp` | 扩展名，忽略大小写，可省略点 |
-| `--verify-images` | 关闭 | 解码校验图片；跳过坏图并记录路径 |
-| `--batch-size` | `1000` | 每批写入数量，必须大于零 |
-| `--dry-run` | 关闭 | 只扫描，不连接数据库；不检查数据集是否同名 |
-
-**先 dry-run：**
-
-```bash
-uv run python scripts/import_images.py \
-  --images-root /data/baby_monitor/images \
-  --dataset-name baby_monitor_raw \
-  --tags baby_monitor,raw \
-  --dry-run
-```
-
-关注报告中的 `valid=`。目录不存在或没有有效图片时不会创建数据集。默认只按扩展名扫描，不解码；需要检查坏图时加 `--verify-images`（dry-run 同样生效）。
-
-确认后再正式导入：
-
-```bash
-uv run python scripts/import_images.py \
-  --images-root /data/baby_monitor/images \
-  --dataset-name baby_monitor_raw \
-  --tags baby_monitor,raw
-```
-
-成功时打印 `imported_dataset=... samples=...`。每张图写入：
-
-- `filepath`：解析符号链接后的绝对路径
-- `relpath`：相对 `--images-root` 的 POSIX 路径
-- `tags`：`--tags` 中的标签
-
-相同规范化绝对路径只导入一次；不同目录中的同名文件会保留。多个符号链接指向同一文件时，保留首次遇到的相对路径。扫描结束会报告 `scanned` / `valid` / `duplicates` / `invalid` / `skipped`。正式写入中途失败会返回非零状态，**保留部分数据集**并报告已写入数量；重试需换新名称或自行处理该数据集。
 
 ### Step：完善基础信息
 
@@ -538,7 +492,6 @@ session = fo.launch_app(val)
 .
 ├── scripts/
 │   ├── import_yolo.py             # YOLO 叶子目录 → FiftyOne（图 + 可选框）
-│   ├── import_images.py           # 无标注图片目录 → FiftyOne
 │   ├── enrich_fiftyone_media.py   # 补哈希与图片 metadata
 │   ├── dedup_fiftyone.py          # 精确删除 + 相似打 dup_near
 │   ├── attach_yolo_labels.py      # 按文件名把 YOLO txt 挂到已有库
@@ -570,3 +523,28 @@ uv add --dev package_name
 uv sync
 uv lock
 ```
+
+## 按标签并集直接导出 YOLO
+
+```bash
+uv run python scripts/export_yolo_by_tags.py \
+  --dataset baby_monitor \
+  --label-field ground_truth_detect \
+  --output-dir ./exports/head_test \
+  --tags head,test \
+  --classes baby_head,adult_head
+```
+
+`--tags` 匹配样本 tags 中的任意一个标签（并集），同时带多个标签的样本仅导出一次。
+全部结果统一写入 `images/train/`、`labels/train/`，同时生成 `dataset.yaml`
+和 `export_summary.json`；不按标签拆分训练集、验证集或测试集，也不隐式排除其他标签。
+图片默认软链接到原图，请保留原图位置；可用 `--export-media copy` 改为复制。
+
+`--label-field` 默认 `ground_truth`，本项目通常需显式指定 `ground_truth_detect`。
+可用 `--classes baby,adult` 固定类别 ID 顺序；否则从本次筛选结果收集类别并排序。
+多次导出需要一致类别 ID 时，请传入相同的完整类别列表。
+`--dry-run` 执行检查并打印统计，不创建目录或文件。
+
+脚本拒绝不存在的标签、空筛选结果、缺失图片、非检测标注字段及非空输出目录。
+缺失标注（字段值为 `None`）和空的 `Detections` 均保留为负样本，不修改数据库中的原始标注。显式指定的类别列表必须覆盖筛选结果中的全部类别。
+导出失败可能留下部分文件，应检查后使用新的空目录重试。

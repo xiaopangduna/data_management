@@ -73,23 +73,28 @@ def test_parse_args_images_only():
 def test_parse_yolo_txt_valid(tmp_path: Path):
     path = tmp_path / "foo.txt"
     path.write_text("0 0.5 0.5 0.2 0.4\n1 0.3 0.3 0.1 0.1\n", encoding="utf-8")
-    boxes = import_yolo.parse_yolo_txt(path, ["baby_head", "adult_head"])
+    boxes, error = import_yolo.parse_yolo_txt(path, ["baby_head", "adult_head"])
+    assert error is None
     assert boxes is not None
     by_name = {name: bbox for name, bbox in boxes}
     assert by_name["baby_head"] == [0.4, 0.3, 0.2, 0.4]
     assert by_name["adult_head"] == [0.25, 0.25, 0.1, 0.1]
 
 
-def test_parse_yolo_txt_empty(tmp_path: Path):
+def test_parse_yolo_txt_empty_is_not_an_error(tmp_path: Path):
     path = tmp_path / "foo.txt"
     path.write_text("\n", encoding="utf-8")
-    assert import_yolo.parse_yolo_txt(path, ["baby_head"]) is None
+    boxes, error = import_yolo.parse_yolo_txt(path, ["baby_head"])
+    assert boxes is None
+    assert error is None
 
 
 def test_parse_yolo_txt_class_out_of_range(tmp_path: Path):
     path = tmp_path / "foo.txt"
     path.write_text("2 0.5 0.5 0.2 0.2\n", encoding="utf-8")
-    assert import_yolo.parse_yolo_txt(path, ["baby_head"]) is None
+    boxes, error = import_yolo.parse_yolo_txt(path, ["baby_head"])
+    assert boxes is None
+    assert error is not None
 
 
 def test_list_leaf_files_ignores_nested(tmp_path: Path):
@@ -98,8 +103,9 @@ def test_list_leaf_files_ignores_nested(tmp_path: Path):
     nested.mkdir(parents=True)
     (leaf / "a.jpg").write_bytes(b"x")
     (nested / "b.jpg").write_bytes(b"y")
-    files = import_yolo.list_leaf_files(leaf, import_yolo.IMAGE_SUFFIXES)
+    files, subdirs = import_yolo.list_leaf_files(leaf, import_yolo.IMAGE_SUFFIXES)
     assert [path.name for path in files] == ["a.jpg"]
+    assert subdirs == 1
 
 
 def test_tag_list_rejects_blank():

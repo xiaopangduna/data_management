@@ -9,6 +9,7 @@ their labels is left for a later update script.
 from __future__ import annotations
 
 import argparse
+import csv
 import logging
 import os
 import sys
@@ -20,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 BATCH_SIZE = 1000
+REPORT_SUBDIR = "tmp"
+ISSUE_COLUMNS = ("issue", "filepath", "filename", "label_filepath", "detail")
 
 
 def nonempty(value: str) -> str:
@@ -59,8 +62,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def list_leaf_files(directory: Path, suffixes: set[str]) -> list[Path]:
-    """List files in one directory. Does not recurse."""
+def list_leaf_files(directory: Path, suffixes: set[str]) -> tuple[list[Path], int]:
+    """List files in one directory. Does not recurse. Returns files and subdir count."""
     files: list[Path] = []
     subdirs = 0
     with os.scandir(directory) as entries:
@@ -71,31 +74,31 @@ def list_leaf_files(directory: Path, suffixes: set[str]) -> list[Path]:
             path = Path(entry.path)
             if path.suffix.lower() in suffixes:
                 files.append(path)
-    if subdirs:
-        logger.warning("Ignoring %s subdirectory(ies) under %s; pass a leaf directory", subdirs, directory)
     files.sort()
-    return files
+    return files, subdirs
 
 
-def scan_images(images_dir: Path) -> list[tuple[str, str, str]]:
-    """Return (resolved filepath, filename, stem), skipping duplicate targets."""
+def scan_images(images_dir: Path) -> tuple[list[tuple[str, str, str]], int]:
+    """Return (resolved filepath, filename, stem) and ignored subdirectory count."""
+    paths, subdirs = list_leaf_files(images_dir, IMAGE_SUFFIXES)
     items: list[tuple[str, str, str]] = []
     seen: set[str] = set()
-    for path in list_leaf_files(images_dir, IMAGE_SUFFIXES):
+    for path in paths:
         filepath = str(path.resolve(strict=True))
         if filepath in seen:
             continue
         seen.add(filepath)
         items.append((filepath, path.name, path.stem))
-    return items
+    return items, subdirs
 
 
-def parse_yolo_txt(path: Path, names: list[str]) -> list[tuple[str, list[float]]] | None:
-    """Parse one YOLO txt into (class_name, top-left xywh) boxes. None if unusable."""
+def parse_yolo_txt(
+    path: Path, names: list[str]
+) -> tuple[list[tuple[str, list[float]]] | None, str | None]:
+    """Parse one YOLO txt. Empty file is unlabeled (no error). Malformed lines return an error."""
     text = path.read_text(encoding="utf-8", errors="replace")
     if not text.strip():
-        logger.warning("empty label: %s", path)
-        return None
+        return None, None
     boxes: list[tuple[str, list[float]]] = []
     for line_number, raw in enumerate(text.splitlines(), start=1):
         line = raw.strip()
@@ -103,17 +106,14 @@ def parse_yolo_txt(path: Path, names: list[str]) -> list[tuple[str, list[float]]
             continue
         parts = line.split()
         if len(parts) != 5:
-            logger.warning("parse error %s:%s: expected 5 numbers", path, line_number)
-            return None
+            return None, f"line {line_number}: expected 5 numbers, got {len(parts)}"
         try:
             class_id = int(float(parts[0]))
             center_x, center_y, width, height = (float(item) for item in parts[1:])
         except ValueError:
-            logger.warning("parse error %s:%s: not numeric", path, line_number)
-            return None
+            return None, f"line {line_number}: not numeric"
         if not 0 <= class_id < len(names) or width <= 0 or height <= 0:
-            logger.warning("parse error %s:%s: bad class_id or box size", path, line_number)
-            return None
+            return None, f"line {line_number}: bad class_id or box size"
         boxes.append(
             (
                 names[class_id],
@@ -126,27 +126,41 @@ def parse_yolo_txt(path: Path, names: list[str]) -> list[tuple[str, list[float]]
             )
         )
     if not boxes:
-        logger.warning("empty label: %s", path)
-        return None
-    return boxes
+        return None, None
+    return boxes, None
 
 
-def labels_for_stem(
-    stem: str,
-    collisions: set[str],
-    label_by_stem: dict[str, Path],
-    names: list[str],
-) -> tuple[list[tuple[str, list[float]]] | None, str | None, bool]:
-    """Return boxes, label path, and whether a parse warning was emitted."""
-    if stem in collisions:
-        return None, None, False
-    label_path = label_by_stem.get(stem)
-    if label_path is None:
-        return None, None, False
-    boxes = parse_yolo_txt(label_path, names)
-    if boxes is None:
-        return None, None, True
-    return boxes, str(label_path.resolve()), False
+def issue_row(
+    issue: str,
+    filepath: str = "",
+    filename: str = "",
+    label_filepath: str = "",
+    detail: str = "",
+) -> dict[str, str]:
+    return {
+        "issue": issue,
+        "filepath": filepath,
+        "filename": filename,
+        "label_filepath": label_filepath,
+        "detail": detail,
+    }
+
+
+def issue_csv_path(dataset_name: str) -> Path:
+    directory = Path.cwd() / REPORT_SUBDIR
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / f"import_yolo_{dataset_name}.csv"
+
+
+def write_issue_csv(path: Path, rows: list[dict[str, str]]) -> None:
+    rows = sorted(
+        rows,
+        key=lambda row: (row["issue"], row["label_filepath"], row["filepath"]),
+    )
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(ISSUE_COLUMNS))
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def add_samples(dataset: object, samples: list[object]) -> int:
@@ -167,18 +181,35 @@ def run(
     names: list[str] | None,
     dry_run: bool,
 ) -> int:
-    items = scan_images(images_dir)
+    items, image_subdirs = scan_images(images_dir)
     if not items:
         logger.error("No images in leaf directory: %s", images_dir)
         return 1
 
+    issues: list[dict[str, str]] = []
+    if image_subdirs:
+        issues.append(
+            issue_row(
+                "ignored_subdir",
+                filepath=str(images_dir),
+                detail=f"{image_subdirs} subdirectory(ies) ignored",
+            )
+        )
+
     collisions = {stem for stem, count in Counter(stem for _, _, stem in items).items() if count > 1}
-    for stem in sorted(collisions):
-        logger.warning("stem collision %s: images imported, labels skipped", stem)
 
     label_by_stem: dict[str, Path] = {}
     if labels_dir is not None:
-        label_by_stem = {path.stem: path for path in list_leaf_files(labels_dir, {".txt"})}
+        label_paths, label_subdirs = list_leaf_files(labels_dir, {".txt"})
+        label_by_stem = {path.stem: path for path in label_paths}
+        if label_subdirs:
+            issues.append(
+                issue_row(
+                    "ignored_subdir",
+                    filepath=str(labels_dir),
+                    detail=f"{label_subdirs} subdirectory(ies) ignored",
+                )
+            )
 
     warnings.filterwarnings("ignore", category=SyntaxWarning, module=r"glob2(\.|$)")
     import fiftyone as fo
@@ -190,7 +221,7 @@ def run(
         existing = {str(Path(str(path)).resolve()) for path in dataset.values("filepath")}
 
     pending: list[tuple[str, str, list[tuple[str, list[float]]] | None, str | None]] = []
-    skipped = unlabeled = parse_warnings = 0
+    skipped = unlabeled = parse_errors = 0
     for filepath, filename, stem in items:
         if filepath in existing:
             skipped += 1
@@ -198,16 +229,45 @@ def run(
         boxes = None
         label_filepath = None
         if names is not None:
-            boxes, label_filepath, warned = labels_for_stem(stem, collisions, label_by_stem, names)
-            parse_warnings += int(warned)
+            if stem in collisions:
+                issues.append(
+                    issue_row(
+                        "stem_collision",
+                        filepath=filepath,
+                        filename=filename,
+                        detail=f"multiple images share stem {stem}",
+                    )
+                )
+            else:
+                label_path = label_by_stem.get(stem)
+                if label_path is not None:
+                    boxes, error = parse_yolo_txt(label_path, names)
+                    label_filepath = str(label_path.resolve()) if boxes else None
+                    if error:
+                        parse_errors += 1
+                        issues.append(
+                            issue_row(
+                                "parse_error",
+                                filepath=filepath,
+                                filename=filename,
+                                label_filepath=str(label_path.resolve()),
+                                detail=error,
+                            )
+                        )
         if boxes is None:
             unlabeled += 1
         pending.append((filepath, filename, boxes, label_filepath))
 
+    csv_path = ""
+    if issues:
+        csv_path = str(issue_csv_path(dataset_name))
+        write_issue_csv(Path(csv_path), issues)
+
     print(f"mode={'dry-run' if dry_run else 'import'} dataset_name={dataset_name}")
     print(
         f"scanned={len(items)} new_samples={len(pending)} skipped_existing={skipped} "
-        f"unlabeled={unlabeled} parse_warnings={parse_warnings}"
+        f"unlabeled={unlabeled} parse_errors={parse_errors} issues={len(issues)}"
+        + (f" csv_path={csv_path}" if csv_path else "")
     )
     if dry_run:
         return 0
