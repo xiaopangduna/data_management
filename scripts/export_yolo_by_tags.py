@@ -111,7 +111,7 @@ def export_dataset(args: argparse.Namespace) -> dict:
         label_field=args.label_field,
         split="train",
         classes=classes,
-        export_media=args.export_media,
+        export_media=True if args.export_media == "copy" else args.export_media,
     )
     (output / "export_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
