@@ -16,7 +16,7 @@ def load_script(name: str):
     return module
 
 
-attach = load_script("attach_xlabel_labels.py")
+attach = load_script("update_xlabel_labels.py")
 
 
 def test_boxes_equal_allows_two_pixels():

@@ -153,16 +153,47 @@ def test_parse_yolo_txt_accepts_str_path(tmp_path: Path):
 
 
 def test_parse_yolo_txt_many_chunked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(import_yolo, "PARSE_CHUNK_SIZE", 2)
-    monkeypatch.setattr(import_yolo, "PARSE_WORKERS", 2)
+    from data_management import yolo_import as core
+
+    monkeypatch.setattr(core, "PARSE_CHUNK_SIZE", 2)
+    monkeypatch.setattr(core, "PARSE_WORKERS", 2)
     paths = []
     for index in range(5):
         path = tmp_path / f"{index}.txt"
         path.write_text("0 0.5 0.5 0.2 0.2\n", encoding="utf-8")
         paths.append(str(path))
-    results = import_yolo.parse_yolo_txt_many(paths, ["baby_head"])
+    results = core.parse_yolo_txt_many(paths, ["baby_head"])
     assert len(results) == 5
     assert all(error is None and boxes is not None for boxes, error in results)
+
+
+def test_prepare_leaf_orphan_label_and_relpath(tmp_path: Path):
+    from data_management.yolo_import import prepare_leaf
+
+    root = tmp_path / "coco"
+    images = root / "images" / "train"
+    labels = root / "labels" / "train"
+    images.mkdir(parents=True)
+    labels.mkdir(parents=True)
+    (images / "a.jpg").write_bytes(b"x")
+    (labels / "a.txt").write_text("0 0.5 0.5 0.2 0.2\n", encoding="utf-8")
+    (labels / "orphan.txt").write_text("0 0.5 0.5 0.2 0.2\n", encoding="utf-8")
+    result = prepare_leaf(
+        images,
+        ["coco", "train"],
+        labels,
+        ["person"],
+        existing=set(),
+        dry_run=False,
+        relpath_root=root,
+    )
+    assert result.items_count == 1
+    assert result.parse_errors == 0
+    assert result.unlabeled == 0
+    assert any(row["issue"] == "orphan_label" for row in result.issues)
+    assert result.pending[0].relpath == "images/train/a.jpg"
+    assert result.pending[0].boxes is not None
+    assert result.pending[0].tags == ["coco", "train"]
 
 
 def test_tag_list_rejects_blank():

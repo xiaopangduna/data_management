@@ -27,7 +27,6 @@ from PIL import Image
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_DATASET_NAME = "coco2017"
 SUPPORTED_HASH_TYPES = frozenset({"sha256", "phash"})
 SHA256_FIELD = "sha256"
 PHASH_FIELD = "phash"
@@ -35,6 +34,13 @@ PHASH_ALGORITHM_FIELD = "phash_algorithm"
 PHASH_ALGORITHM = "phash-dct-64-v1"
 LOG_INTERVAL = 2000
 SHA256_CHUNK_SIZE = 1024 * 1024
+
+
+def nonempty(value: str) -> str:
+    stripped = value.strip()
+    if not stripped:
+        raise argparse.ArgumentTypeError("must not be empty")
+    return stripped
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -51,7 +57,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--dataset-name",
-        default=DEFAULT_DATASET_NAME,
+        required=True,
+        type=nonempty,
         help="Existing FiftyOne dataset name.",
     )
     parser.add_argument(
