@@ -1,7 +1,7 @@
-"""Export a relabel folder of image symlinks and X-AnyLabeling JSON.
+"""Export a relabel folder of images and X-AnyLabeling JSON.
 
-Writes ``<out-dir>/<relpath>`` (symlink to the original file) and a sidecar
-``<out-dir>/<relpath-with-.json>``. Does not copy images or change FiftyOne.
+Writes ``<out-dir>/<relpath>`` (copy by default, optionally a symlink) and a sidecar
+``<out-dir>/<relpath-with-.json>``. Does not change FiftyOne.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ import argparse
 import csv
 import json
 import logging
+import shutil
 import sys
 import warnings
 from dataclasses import dataclass, field
@@ -26,7 +27,7 @@ from PIL import Image
 
 logger = logging.getLogger(__name__)
 
-DETECT_FIELD = "ground_truth_detect"
+DETECT_FIELD = "ground_truth"
 BOX_DECIMALS = 6
 REPORT_SUBDIR = "tmp"
 XLABEL_VERSION = "2.5.0"
@@ -45,7 +46,6 @@ ISSUE_COLUMNS = (
     "relpath",
     "detail",
 )
-DEFAULT_EXCLUDE_TAGS = "dup_near"
 
 
 @dataclass
@@ -86,51 +86,39 @@ def class_names(value: str) -> list[str]:
     return names
 
 
-def include_tags(value: str) -> list[str]:
-    """Parse required include tags; at least one name."""
-    names = [part.strip() for part in value.split(",") if part.strip()]
-    if not names:
-        raise argparse.ArgumentTypeError("provide at least one tag")
-    return names
-
-
-def tag_list(value: str) -> list[str]:
-    """Parse tags; ``none`` or empty means no tags."""
-    stripped = value.strip()
-    if stripped.lower() in {"", "none"}:
-        return []
-    return [part.strip() for part in stripped.split(",") if part.strip()]
-
-
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse CLI arguments for X-AnyLabeling export."""
     parser = argparse.ArgumentParser(
-        description="Export image symlinks and X-AnyLabeling JSON into one folder."
+        description="Export images and X-AnyLabeling JSON into one folder."
     )
     parser.add_argument("--dataset-name", required=True, type=nonempty)
     parser.add_argument(
         "--out-dir",
         required=True,
         type=Path,
-        help="New task directory (symlinks + sidecar JSON). Not the original images folder.",
+        help="New task directory (images + sidecar JSON). Not the original images folder.",
     )
     parser.add_argument(
-        "--include-tags",
-        required=True,
-        type=include_tags,
-        help="Export samples that have any of these tags (comma-separated).",
+        "--export-media",
+        choices=("copy", "symlink"),
+        default="copy",
+        help="Copy images (default), or create symlinks to the originals.",
     )
     parser.add_argument(
-        "--exclude-tags",
-        default=DEFAULT_EXCLUDE_TAGS,
-        type=tag_list,
-        help="Omit samples with any of these tags. Default: dup_near. Use none to keep them.",
+        "--sample-tags", required=True, type=class_names,
+        help="Require ALL sample tags (comma-separated); intersect with --labels.",
     )
     parser.add_argument(
-        "--class-names",
-        default=None,
-        type=class_names,
-        help="If set, skip boxes whose label is not in this list.",
+        "--label-field", default=DETECT_FIELD, type=nonempty,
+        help="Detections field used for both filtering and export (default: ground_truth).",
+    )
+    parser.add_argument(
+        "--labels", default=None, type=class_names,
+        help="Require ALL labels in --label-field (comma-separated); does not remove boxes.",
+    )
+    parser.add_argument(
+        "--export-labels", default=None, type=class_names,
+        help="Export only these box labels after sample selection; default: all labels.",
     )
     parser.add_argument(
         "--dry-run",
@@ -224,21 +212,22 @@ def read_image_size(filepath: Path, metadata: object) -> tuple[int, int] | None:
     return width, height
 
 
-def apply_exclude_tags(view: fo.DatasetView, exclude_tags: list[str]) -> fo.DatasetView:
-    """Drop samples that have any excluded tag."""
-    for tag in exclude_tags:
-        view = view.match_tags(tag, bool=False)
-    return view
-
-
 def filtered_view(
     dataset: fo.Dataset,
-    include_tags: list[str],
-    exclude_tags: list[str],
+    sample_tags: list[str],
+    label_field: str = DETECT_FIELD,
+    labels: list[str] | None = None,
 ) -> fo.DatasetView:
-    """Samples with any include tag, minus excluded tags."""
-    view = dataset.match_tags(include_tags, bool=True, all=False)
-    return apply_exclude_tags(view, exclude_tags)
+    """Intersect all sample tags and all labels without filtering any boxes."""
+    if not dataset.has_field(label_field):
+        raise ValueError(f"Label field does not exist: {label_field}")
+    field = dataset.get_field(label_field)
+    if not isinstance(field, fo.EmbeddedDocumentField) or field.document_type is not fo.Detections:
+        raise ValueError(f"Label field must contain Detections: {label_field}")
+    view = dataset.match_tags(sample_tags, bool=True, all=True)
+    if labels:
+        view = view.match({f"{label_field}.detections.label": {"$all": labels}})
+    return view
 
 
 def build_xlabel_document(item: ExportItem) -> dict:
@@ -261,8 +250,9 @@ def build_xlabel_document(item: ExportItem) -> dict:
 def collect_export_plan(
     view: fo.DatasetView,
     allowed: set[str] | None,
+    label_field: str = DETECT_FIELD,
 ) -> ExportPlan:
-    """Collect symlink/JSON work and issue rows."""
+    """Collect image/JSON work and issue rows."""
     plan = ExportPlan(view_samples=len(view))
     ids = [str(sample_id) for sample_id in view.values("id")]
     filepaths = view.values("filepath")
@@ -270,8 +260,8 @@ def collect_export_plan(
         relpaths = view.values("relpath")
     else:
         relpaths = [None] * len(ids)
-    if view.has_field(DETECT_FIELD):
-        detections_list = view.values(DETECT_FIELD)
+    if view.has_field(label_field):
+        detections_list = view.values(label_field)
     else:
         detections_list = [None] * len(ids)
     if view.has_field("metadata"):
@@ -355,8 +345,12 @@ def issue_csv_path(dataset_name: str) -> Path:
     return directory / f"export_xlabel_{dataset_name}.csv"
 
 
-def apply_export(out_dir: Path, items: list[ExportItem]) -> tuple[int, int, list[dict[str, str]]]:
-    """Create symlinks and JSON. Returns written images, json files, extra issues."""
+def apply_export(
+    out_dir: Path, items: list[ExportItem], export_media: str = "copy"
+) -> tuple[int, int, list[dict[str, str]]]:
+    """Write images and JSON. Returns written images, json files, extra issues."""
+    if export_media not in {"copy", "symlink"}:
+        raise ValueError(f"Unsupported export media mode: {export_media}")
     images = 0
     json_files = 0
     issues: list[dict[str, str]] = []
@@ -365,7 +359,13 @@ def apply_export(out_dir: Path, items: list[ExportItem]) -> tuple[int, int, list
         destination = out_dir / item.relpath
         json_path = out_dir / item.json_relpath
         destination.parent.mkdir(parents=True, exist_ok=True)
-        conflict = ensure_symlink(destination, item.filepath)
+        if export_media == "symlink":
+            conflict = ensure_symlink(destination, item.filepath)
+        elif destination.exists() or destination.is_symlink():
+            conflict = "dest_exists"
+        else:
+            shutil.copy2(item.filepath, destination)
+            conflict = None
         if conflict:
             issues.append(
                 issue_row("dest_exists", item.sample_id, item.relpath, str(destination))
@@ -406,9 +406,13 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("Dataset does not exist: %s", args.dataset_name)
         return 1
     dataset = fo.load_dataset(args.dataset_name)
-    view = filtered_view(dataset, args.include_tags, args.exclude_tags)
-    allowed = set(args.class_names) if args.class_names else None
-    plan = collect_export_plan(view, allowed)
+    try:
+        view = filtered_view(dataset, args.sample_tags, args.label_field, args.labels)
+    except ValueError as exc:
+        logger.error("%s", exc)
+        return 1
+    allowed = set(args.export_labels) if args.export_labels else None
+    plan = collect_export_plan(view, allowed, args.label_field)
     csv_path = issue_csv_path(dataset.name)
     write_csv(csv_path, ISSUE_COLUMNS, plan.issues)
     out_dir = args.out_dir.expanduser()
@@ -417,8 +421,11 @@ def main(argv: list[str] | None = None) -> int:
             "mode": "dry-run" if args.dry_run else "export",
             "dataset_name": dataset.name,
             "out_dir": str(out_dir.resolve()),
-            "include_tags": ",".join(args.include_tags),
-            "exclude_tags": ",".join(args.exclude_tags) if args.exclude_tags else "none",
+            "export_media": args.export_media,
+            "sample_tags": ",".join(args.sample_tags),
+            "label_field": args.label_field,
+            "labels": ",".join(args.labels) if args.labels else "none",
+            "export_labels": ",".join(args.export_labels) if args.export_labels else "all",
             "view_samples": plan.view_samples,
             "to_write": len(plan.to_write),
             "issues": len(plan.issues),
@@ -427,7 +434,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.dry_run:
         return 0
-    images, json_files, extra = apply_export(out_dir, plan.to_write)
+    images, json_files, extra = apply_export(out_dir, plan.to_write, args.export_media)
     if extra:
         plan.issues.extend(extra)
         write_csv(csv_path, ISSUE_COLUMNS, plan.issues)

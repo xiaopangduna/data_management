@@ -27,7 +27,7 @@ source ~/.local/bin/env
 
 ## 用法
 
-图片留在原目录，FiftyOne 只存路径和元数据。YOLO 叶子目录（`images/train` + `labels/train`）用 `import_yolo.py` 入库并挂框；无标注叶子目录不传 `--labels-dir`。再用 `enrich_fiftyone_media.py` 补哈希和尺寸，然后用 `dedup_fiftyone.py` 去重。需要重标时用 `export_xlabel.py` 导出软链和 JSON，在 X-AnyLabeling 中改完后用 `attach_xlabel_labels.py` 写回。训练导出用 `export_yolo_by_tags.py` 按 tag 写出 YOLO 目录。带 YOLO 标签的 COCO 见下文「导入 YOLO → FiftyOne」。
+图片留在原目录，FiftyOne 只存路径和元数据。YOLO 叶子目录（`images/train` + `labels/train`）用 `import_yolo.py` 入库并挂框；无标注叶子目录不传 `--labels-dir`。再用 `enrich_fiftyone_media.py` 补哈希和尺寸，然后用 `dedup_fiftyone.py` 去重。需要重标时用 `export_xlabel.py` 导出图片副本和 JSON，在 X-AnyLabeling 中改完后用 `attach_xlabel_labels.py` 写回。训练导出用 `export_yolo_by_tags.py` 按 tag 写出 YOLO 目录。带 YOLO 标签的 COCO 见下文「导入 YOLO → FiftyOne」。
 
 ### Step：导入 YOLO 叶子目录
 
@@ -254,15 +254,17 @@ uv run python scripts/attach_yolo_labels.py \
 
 脚本：[scripts/export_xlabel.py](scripts/export_xlabel.py)
 
-从已有数据集筛出要重标的样本，写到**独立任务目录**（不要写回原图目录）：每张图一个软链，旁边一份 X-AnyLabeling JSON（已有 `ground_truth_detect` 会转成 rectangle）。不拷贝原图，不改 FiftyOne。先在 App 里给要导出的图打 tag（例如 `relabel`），再用 `--include-tags` 选出它们。
+从已有数据集筛出要重标的样本，写到**独立任务目录**（不要写回原图目录）：每张图默认复制一份，旁边一份 X-AnyLabeling JSON（指定字段的已有标注 会转成 rectangle）。可用 `--export-media symlink` 改为软链接；不改 FiftyOne。先在 App 里给要导出的图打 tag（例如 `relabel`），再用 `--sample-tags` 选出它们。
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
 | `--dataset-name` | 必填 | 已有 FiftyOne 数据集名 |
 | `--out-dir` | 必填 | 任务目录 |
-| `--include-tags` | 必填 | 带其中任一 tag 的样本才导出 |
-| `--exclude-tags` | `dup_near` | 排除这些 tag；`none` 表示不排除 |
-| `--class-names` | 无 | 检测框类名白名单：只有这些 `label` 写入 JSON；未指定则全部导出 |
+| `--export-media` | `copy` | 复制图片；可选 `symlink` 创建软链接 |
+| `--sample-tags` | 必填 | 必须同时具有全部 sample tags，逗号分隔 |
+| `--label-field` | `ground_truth` | 用于筛选和导出的 Detections 字段 |
+| `--labels` | 无 | 指定字段必须同时包含全部 label 类别，逗号分隔；不传则仅按 tags 筛选 |
+| `--export-labels` | 无 | 仅导出这些类别的框；不传则保留全部类别 |
 | `--dry-run` | 关闭 | 只规划并写问题 CSV，不建目录 |
 
 **先 dry-run：**
@@ -271,8 +273,9 @@ uv run python scripts/attach_yolo_labels.py \
 uv run python scripts/export_xlabel.py \
   --dataset-name BBM08S_head \
   --out-dir /mnt/nvme_data/data/relabel_BBM08S_head \
-  --include-tags relabel \
-  --class-names baby_head \
+  --sample-tags test \
+  --label-field ground_truth \
+  --labels person,adult_head \
   --dry-run
 ```
 
@@ -281,13 +284,23 @@ uv run python scripts/export_xlabel.py \
 ```
 <out-dir>/
   manifest.csv
-  <relpath>.jpg     # 软链 → 原 filepath
+  <relpath>.jpg     # 默认图片副本；symlink 模式链接到原 filepath
   <relpath>.json    # XLABEL，含 sample_id / fo_sample_id=
 ```
 
-在 X-AnyLabeling 中打开 `<out-dir>`（或其中有图的子目录），**不要**打开 Save Image Data。类名须与 `--class-names` 一致。JSON 与图在同一层，一般不必再改 output 目录。
+在 X-AnyLabeling 中打开 `<out-dir>`（或其中有图的子目录），**不要**打开 Save Image Data。类名须与导出的 label 一致。JSON 与图在同一层，一般不必再改 output 目录。
+
+默认复制适合交付其他机器标注；本机标注可用 `--export-media symlink` 节省空间。使用新的任务目录；复制模式遇到已有图片（包括软链接）会报告 `dest_exists` 并跳过，不覆盖图片和对应 JSON。
+
+只导出头部框可传 `--export-labels baby_head`，只导出身体框可传 `--export-labels baby_body`，多个类别用逗号分隔。脚本读取 `--label-field` 指定的字段；其它类别的框会记为 `unknown_class` 并过滤，如果一张图已有的框全部被过滤，该图会被跳过，无框图片仍会导出。回写时指定相同的 `--label-field`，并通过回写脚本的 `--class-names` 指定要替换的类别，只替换这些类别，保留库中的其它类别。
+
+如果只想隐藏其它类别而保留完整 JSON，新版 X-AnyLabeling 可在 `Tools > Label Manager` 的 `Visible` 列取消其它类别，点击 `Go` 应用，设置跨图片切换生效。参见[官方使用说明](https://github.com/CVHub520/X-AnyLabeling/blob/main/docs/en/user_guide.md#53-label-manager)。
 
 问题 CSV 在 `tmp/export_xlabel_<数据集>.csv`。
+
+筛选只取交集：例如 `--sample-tags test,review --labels person,adult_head` 要求同时具有两个 sample tag，且指定字段同时包含两类框（可以是不同的框）。筛选使用完整标注，之后才按 `--export-labels` 过滤导出的框。无标注图片不满足 `--labels`；不传 `--labels` 时仍可导出。字段不存在或不是 Detections 类型时报错。
+
+不再自动排除 `dup_near`，也不提供排除参数。旧 `--include-tags` / `--exclude-tags` / `--class-names` 导出参数已移除；注意旧 include-tags 是任一匹配，新 sample-tags 是全部匹配。
 
 ### Step：将 YOLO 检测标注转换为 X-AnyLabeling
 
@@ -407,9 +420,9 @@ uv run python scripts/export_yolo_by_tags.py \
   export_summary.json
 ```
 
-`--label-field` 默认 `ground_truth`（`import_yolo.py` 写入的字段）。`attach_xlabel_labels.py` 默认也写入 `ground_truth`，可用 `--label-field` 选择其他字段。`attach_yolo_labels.py` 和 `import_coco_yolo.py` 写入 `ground_truth_detect`，导出这些库时要显式指定。`--tags` 匹配任意一个标签，同时带多个标签的样本只导出一次。图片默认软链接，可用 `--export-media copy` 改为复制。`--classes` 固定类别 ID 顺序；不传则从本次结果收集并排序。多次导出要一致 ID 时传入相同完整列表。
+`--label-field` 默认 `ground_truth`（`import_yolo.py` 写入的字段）。`attach_xlabel_labels.py` 默认也写入 `ground_truth`，可用 `--label-field` 选择其他字段。`attach_yolo_labels.py` 和 `import_coco_yolo.py` 写入 `ground_truth_detect`，导出这些库时要显式指定。`--tags` 匹配任意一个标签，同时带多个标签的样本只导出一次。图片默认软链接，可用 `--export-media copy` 改为复制。`--classes` 只导出指定类别的标注框，并按传入顺序分配类别 ID；不传则导出全部类别并排序。过滤后无框的图片仍保留为负样本，统计中的框数和负样本数以过滤后为准。多次导出要一致 ID 时传入相同类别列表。
 
-脚本拒绝不存在的标签、空筛选结果、缺失图片、非检测标注字段及非空输出目录。显式类别列表必须覆盖筛选结果中的全部类别。导出失败可能留下部分文件，应换新的空目录重试。App 里改过 tag 或删过图之后应重新导出，不要手工改生成目录。
+脚本拒绝不存在的标签、空筛选结果、缺失图片、非检测标注字段及非空输出目录。未列入 `--classes` 的标注框会被忽略，不修改源数据集。导出失败可能留下部分文件，应换新的空目录重试。App 里改过 tag 或删过图之后应重新导出，不要手工改生成目录。
 
 ## YOLO 数据目录
 
@@ -529,7 +542,7 @@ session = fo.launch_app(val)
 │   ├── enrich_fiftyone_media.py   # 补哈希与图片 metadata
 │   ├── dedup_fiftyone.py          # 精确删除 + 相似打 dup_near
 │   ├── attach_yolo_labels.py      # 按文件名把 YOLO txt 挂到已有库
-│   ├── export_xlabel.py           # 筛库 → 软链 + X-AnyLabeling JSON
+│   ├── export_xlabel.py           # 筛库 → 图片副本/软链 + X-AnyLabeling JSON
 │   ├── attach_xlabel_labels.py    # JSON 目录 → 覆盖写回检测框并打批次 tag
 │   ├── export_yolo_by_tags.py     # 按 tag 并集 → YOLO 目录
 │   └── import_coco_yolo.py        # YOLO 布局 COCO → FiftyOne

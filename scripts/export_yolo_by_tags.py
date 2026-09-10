@@ -32,7 +32,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--tags", required=True, type=names,
                         help="Comma-separated sample tags; match ANY tag (union).")
     parser.add_argument("--classes", type=names,
-                        help="Complete class list in class ID order; otherwise sorted from selected samples.")
+                        help="Classes to export in class ID order; otherwise all classes sorted from selected samples.")
     parser.add_argument("--export-media", choices=("symlink", "copy"), default="symlink")
     parser.add_argument("--dry-run", action="store_true",
                         help="Validate and print the plan without writing files.")
@@ -65,6 +65,12 @@ def export_dataset(args: argparse.Namespace) -> dict:
     if not count:
         raise ValueError("No samples match the requested tags")
 
+    if args.classes is not None:
+        view = view.filter_labels(
+            args.label_field, fo.ViewField("label").is_in(args.classes),
+            only_matches=False,
+        )
+
     detected_classes: set[str] = set()
     boxes = negatives = 0
     for sample in view.iter_samples():
@@ -80,9 +86,6 @@ def export_dataset(args: argparse.Namespace) -> dict:
             detected_classes.add(detection.label)
 
     classes = args.classes if args.classes is not None else sorted(detected_classes)
-    omitted = sorted(detected_classes - set(classes))
-    if omitted:
-        raise ValueError(f"--classes omits selected labels: {', '.join(omitted)}")
     summary = {
         "dataset": args.dataset,
         "label_field": args.label_field,
