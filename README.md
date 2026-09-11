@@ -106,6 +106,9 @@ uv run python scripts/export_yolo.py \
 
 默认软链原图。无框图保留为空 txt。`--label-field` 默认 `ground_truth`。
 
+图片和标注采用相同名称主体，例如 `baby_head__adult_head_000001.jpg/.txt`。
+前缀取实际导出标注的类别，去重后按导出类别 ID 顺序排列（未指定 `--classes` 时按类别名排序），最多 6 个类别，超出追加 `__more`；无框图使用 `negative`。类别名中的不安全字符替换为下划线，过长名称截短。后缀为本次导出从 1 开始的全局序号，至少 6 位，原图扩展名保留。不同批次的序号可能重复，不保证跨批次文件名唯一。
+
 ## 约定
 
 - 检测框字段默认 `ground_truth`。

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -44,6 +45,51 @@ def check_output(path: Path) -> None:
         raise ValueError(f"Output directory must not be a symlink: {path}")
     if path.exists() and (not path.is_dir() or any(path.iterdir())):
         raise ValueError(f"Output directory must be empty or absent: {path}")
+
+
+
+def export_stem(label, classes: list[str], index: int) -> str:
+    """Name a sample using its exported classes and a global sequence number."""
+    present = {d.label for d in label.detections} if label is not None else set()
+    ordered = [name for name in classes if name in present]
+    # Bound components while preserving Unicode class names and avoiding paths.
+    parts = [re.sub(r"[^\w-]+", "_", name).strip("_")[:20] or "class"
+             for name in ordered[:6]]
+    # Cap UTF-8 bytes as well, for filesystems with a 255-byte name limit.
+    parts = [part.encode("utf-8")[:30].decode("utf-8", errors="ignore") for part in parts]
+    if len(ordered) > 6:
+        parts.append("more")
+    prefix = "__".join(parts) if parts else "negative"
+    return f"{prefix}_{index:06d}"
+
+
+def make_exporter(output: Path, classes: list[str], export_media: str):
+    from fiftyone.utils.yolo import YOLOv5DatasetExporter
+
+    class NamedYOLOExporter(YOLOv5DatasetExporter):
+        _sample_index = 0
+
+        def export_sample(self, image_or_path, label, metadata=None):
+            self._sample_index += 1
+            stem = export_stem(label, classes, self._sample_index)
+            image_path = Path(self.data_path) / (stem + Path(image_or_path).suffix)
+            self._media_exporter.export(image_or_path, outpath=str(image_path))
+            labels_path = Path(self.labels_path) / (stem + ".txt")
+            if label is None:
+                labels_path.parent.mkdir(parents=True, exist_ok=True)
+                labels_path.write_text("", encoding="utf-8")
+            else:
+                self._writer.write(
+                    label, str(labels_path), self._labels_map_rev,
+                    dynamic_classes=self._dynamic_classes,
+                    include_confidence=self.include_confidence,
+                    use_masks=self.use_masks, tolerance=self.tolerance,
+                )
+
+    return NamedYOLOExporter(
+        export_dir=str(output), split="train", classes=classes,
+        export_media=True if export_media == "copy" else export_media,
+    )
 
 
 def export_dataset(args: argparse.Namespace) -> dict:
@@ -94,6 +140,7 @@ def export_dataset(args: argparse.Namespace) -> dict:
         "split": "train",
         "output_dir": str(output),
         "export_media": args.export_media,
+        "filename_scheme": "class_prefix_global_sequence",
         "classes": classes,
         "images": count,
         "boxes": boxes,
@@ -106,12 +153,8 @@ def export_dataset(args: argparse.Namespace) -> dict:
 
     check_output(output)
     view.export(
-        export_dir=str(output),
-        dataset_type=fo.types.YOLOv5Dataset,
+        dataset_exporter=make_exporter(output, classes, args.export_media),
         label_field=args.label_field,
-        split="train",
-        classes=classes,
-        export_media=True if args.export_media == "copy" else args.export_media,
     )
     (output / "export_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
