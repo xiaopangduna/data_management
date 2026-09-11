@@ -485,10 +485,17 @@ def build_attach_plan(
                     requested_ids.add(parsed.sample_id)
             elif images_dir is not None and parsed.image_path:
                 path = Path(parsed.image_path).expanduser()
-                if not path.is_absolute():
+                if path.is_absolute():
+                    paths = [path, images_dir / path.name]
+                else:
                     path = images_dir / Path(parsed.label_relpath).parent / path
+                    paths = [path]
                 # Query only this batch's lexical and canonical paths, never resolve the entire dataset.
-                candidates = {os.path.abspath(path), str(path.resolve())}
+                candidates = {
+                    candidate
+                    for path in paths
+                    for candidate in (os.path.abspath(path), str(path.resolve()))
+                }
                 paths_by_label[parsed.label_relpath] = candidates
                 requested_paths.update(candidates)
         if index % QUERY_BATCH_SIZE == 0:

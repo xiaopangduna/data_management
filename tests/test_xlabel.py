@@ -106,6 +106,18 @@ def test_attach_paths_relative_absolute_and_symlink(tmp_path):
         assert not plan.issues
 
 
+def test_attach_absolute_image_path_falls_back_to_images_dir_basename(tmp_path):
+    labels = tmp_path / "labels"
+    images = tmp_path / "current-images"
+    target = images / "a.jpg"
+    target.parent.mkdir()
+    target.touch()
+    write_path_label(labels, str(tmp_path / "old-images" / "a.jpg"))
+    plan = attach.build_attach_plan(PathDataset([str(target)]), labels, ["person"], images)
+    assert list(plan.to_write) == ["000000000000000000000000"]
+    assert not plan.issues
+
+
 def test_attach_paths_do_not_guess_basename_or_duplicate_sample(tmp_path):
     labels = tmp_path / "labels"
     images = tmp_path / "images"

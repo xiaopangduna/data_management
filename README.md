@@ -7,6 +7,24 @@ cd data_management
 uv sync   # Python >= 3.12
 uv run fiftyone datasets list
 uv run fiftyone app launch <dataset>
+
+cd /tmp
+curl -fL -o mongodb-database-tools.deb \
+  https://fastdl.mongodb.org/tools/db/mongodb-database-tools-ubuntu2404-x86_64-100.18.0.deb
+sudo apt install -y ./mongodb-database-tools.deb
+mongodump --version
+export FIFTYONE_DATABASE_URI=mongodb://127.0.0.1:27018
+# 备份
+STAMP=$(date +%Y%m%d)
+OUT=/mnt/nvme_data/backup/fiftyone/fiftyone_${STAMP}.archive.gz
+mkdir -p /mnt/nvme_data/backup/fiftyone
+mongodump --uri="$FIFTYONE_DATABASE_URI" --db fiftyone --gzip --archive="$OUT"
+ls -lh "$OUT"
+
+# 恢复（会覆盖当前库）
+# mongorestore --uri="$FIFTYONE_DATABASE_URI" --gzip \
+#   --archive=/mnt/nvme_data/backup/fiftyone/fiftyone_20260910.archive.gz --drop
+
 ```
 
 各脚本都支持 `--dry-run`：先看统计，确认后再去掉该参数正式写库。问题 CSV 在 `tmp/`。
@@ -129,3 +147,26 @@ scripts/
 ```bash
 uv run pytest -v
 ```
+
+原图入库前可按文件内容的完整 SHA-256 统一命名（默认只处理当前层）：
+
+```bash
+uv run python scripts/rename_images_by_hash.py /path/to/images --dry-run
+uv run python scripts/rename_images_by_hash.py /path/to/images
+```
+
+需要处理各级子目录时增加 `--recursive`。扩展名会转为小写；相同内容、相同扩展名的重复图片以 `-2`、`-3` 保留。脚本不会修改标注文件或 FiftyOne 中已有的文件路径，因此应在入库前运行。
+
+## 按图片内容追加 tags
+
+指定目录中的图片按文件内容 SHA-256 匹配已有数据集，只追加 sample tags，保留原标签并去重。文件名和路径不参与匹配，不导入新样本。先用 `update_media.py` 补齐库中的 `sha256`。
+
+```bash
+uv run python scripts/update_tags.py \
+  --dataset-name BBM08S_head \
+  --images-dir /path/to/selected_images \
+  --tags relabel,review \
+  --dry-run
+```
+
+默认只扫描当前层；包含子目录时加 `--recursive`。确认统计后去掉 `--dry-run` 正式写库。相同内容的多份输入图片只更新对应样本一次；同一哈希对应多个库内样本时跳过。未匹配图片、读取失败、库内缺少哈希及多样本匹配记录到 `tmp/update_tags_<数据集>.csv`（每次运行覆盖，预览也会生成）。整库缺少 `sha256` 字段时直接报错，提示先补哈希。
