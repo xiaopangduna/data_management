@@ -118,7 +118,7 @@ uv run python scripts/update_xlabel_labels.py \
 
 ### Step 6：导出 YOLO 训练
 
-按 tag **并集**筛样本，写出一份目录。默认排除 `dup_repeat_drop`。`--output-dir` 须为空。
+按 tag **并集**筛样本，写出一份目录。默认排除 `dup_repeat_drop`。`--output-dir` 可以已有其它 split；本次 `--split` 对应的 `images/<split>` 和 `labels/<split>` 须为空或不存在。`dataset.yaml` 会合并已有 split。
 
 ```bash
 uv run python scripts/export_yolo.py \
@@ -128,7 +128,7 @@ uv run python scripts/export_yolo.py \
   --classes baby_head,adult_head
 ```
 
-默认软链原图。无框图保留为空 txt。`--label-field` 默认 `ground_truth`。
+默认软链原图。无框图保留为空 txt。`--label-field` 默认 `ground_truth`。`--split` 控制 `images/<split>` 和 `labels/<split>` 目录名，默认 `train`。
 
 图片和标注采用相同名称主体，例如 `baby_head__adult_head_000001.jpg/.txt`。
 前缀取实际导出标注的类别，去重后按导出类别 ID 顺序排列（未指定 `--classes` 时按类别名排序），最多 6 个类别，超出追加 `__more`；无框图使用 `negative`。类别名中的不安全字符替换为下划线，过长名称截短。后缀为本次导出从 1 开始的全局序号，至少 6 位，原图扩展名保留。不同批次的序号可能重复，不保证跨批次文件名唯一。
@@ -136,8 +136,18 @@ uv run python scripts/export_yolo.py \
 ## 约定
 
 - 检测框字段默认 `ground_truth`。
-- 类别在检测字段里，不要写进 sample tags。
-- App 用来看图、筛数据、打工作流 tag，不在里面画框。
+- 判断标准：整图共有的用 sample tags（或 sample 字段）；同一张图上两个框可以不同的用 label tags（或 Detection 字段）；类别名、路径、哈希、分组 ID、分数用字段，不进 tags。
+- Tag 只表示有/无。需要键值（标注员、日期、置信度）时用字段或 attributes。
+- **Sample tags**（选图、排队、整图质量）：
+  - 来源 / split：`head`、`train`、`val`、`test`、`train_bed` 等。导入时打上，导出 YOLO 按它们选图。
+  - 工作队列：`relabel`、`review`。App 或 `update_tags.py` 打上，导出 X-AnyLabeling 按它们选图。
+  - 整图去重：`dup_*`。只描述这张图要不要进训练/复核。
+  - 写回批次：`label_*`、`changed`、`xlabel_checked`。X-AnyLabeling 的 `checked` 按图；写回按 `--class-names` 整图替换那几类框；`changed` 表示这张图被这批 JSON 改过。
+- 命名：无前缀来源 / split / 队列；`dup_*` 去重；`label_*` 写回批次。
+- **Label tags**（`detection.tags`）：只描述单个框，例如 `ignore`、`difficult`、`occluded`、`verified`、`needs_review`。现在不用。不要把 `train` / `relabel` / `dup_*` / `label_*` 复制到框上。YOLO txt 带不走 label tags。
+- 类别只写 `detection.label`，不要写进 sample tags 或 label tags。
+- 结构化值用字段：`filepath`、`relpath`、`sha256`、`phash`、`dup_group`、`dup_of`、`metadata`。
+- App 用来看图、筛数据、打工作流 tag，不在里面画框。工作流 tag 打在 sample 上；只有要标记单个框时才用 label tag。
 
 脚本按动词前缀：`import_` 入库，`update_` 改已有库，`export_` 导出，`convert_` 只转文件，`dedup_` 去重。
 

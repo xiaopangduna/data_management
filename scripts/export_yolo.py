@@ -25,11 +25,20 @@ def names(value: str) -> list[str]:
     return items
 
 
+def split_name(value: str) -> str:
+    value = nonempty(value)
+    if value in {".", ".."} or "/" in value or "\\" in value:
+        raise argparse.ArgumentTypeError("must be a single folder name")
+    return value
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", required=True, type=nonempty)
     parser.add_argument("--label-field", default="ground_truth", type=nonempty)
     parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument("--split", default="train", type=split_name,
+                        help="Folder name under images/ and labels/. Default: train.")
     parser.add_argument("--tags", required=True, type=names,
                         help="Comma-separated sample tags; match ANY tag (union).")
     parser.add_argument("--exclude-tags", type=names, default=["dup_repeat_drop"],
@@ -42,11 +51,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def check_output(path: Path) -> None:
+def check_output(path: Path, split: str) -> None:
     if path.is_symlink():
         raise ValueError(f"Output directory must not be a symlink: {path}")
-    if path.exists() and (not path.is_dir() or any(path.iterdir())):
-        raise ValueError(f"Output directory must be empty or absent: {path}")
+    if path.exists() and not path.is_dir():
+        raise ValueError(f"Output path must be a directory: {path}")
+    for subdir in (path / "images" / split, path / "labels" / split):
+        if subdir.is_symlink():
+            raise ValueError(f"Split directory must not be a symlink: {subdir}")
+        if subdir.exists() and (not subdir.is_dir() or any(subdir.iterdir())):
+            raise ValueError(f"Split directory must be empty or absent: {subdir}")
 
 
 
@@ -65,7 +79,7 @@ def export_stem(label, classes: list[str], index: int) -> str:
     return f"{prefix}_{index:06d}"
 
 
-def make_exporter(output: Path, classes: list[str], export_media: str):
+def make_exporter(output: Path, classes: list[str], export_media: str, split: str = "train"):
     from fiftyone.utils.yolo import YOLOv5DatasetExporter
 
     class NamedYOLOExporter(YOLOv5DatasetExporter):
@@ -89,7 +103,7 @@ def make_exporter(output: Path, classes: list[str], export_media: str):
                 )
 
     return NamedYOLOExporter(
-        export_dir=str(output), split="train", classes=classes,
+        export_dir=str(output), split=split, classes=classes,
         export_media=True if export_media == "copy" else export_media,
     )
 
@@ -98,7 +112,7 @@ def export_dataset(args: argparse.Namespace) -> dict:
     import fiftyone as fo
 
     output = args.output_dir.expanduser().absolute()
-    check_output(output)
+    check_output(output, args.split)
     dataset = fo.load_dataset(args.dataset)
     if dataset.media_type != "image":
         raise ValueError("Only image datasets are supported")
@@ -142,7 +156,7 @@ def export_dataset(args: argparse.Namespace) -> dict:
         "tags": args.tags,
         "exclude_tags": args.exclude_tags,
         "tag_matching": "union",
-        "split": "train",
+        "split": args.split,
         "output_dir": str(output),
         "export_media": args.export_media,
         "filename_scheme": "class_prefix_global_sequence",
@@ -156,9 +170,9 @@ def export_dataset(args: argparse.Namespace) -> dict:
         print("Dry run: no files written.")
         return summary
 
-    check_output(output)
+    check_output(output, args.split)
     view.export(
-        dataset_exporter=make_exporter(output, classes, args.export_media),
+        dataset_exporter=make_exporter(output, classes, args.export_media, args.split),
         label_field=args.label_field,
     )
     (output / "export_summary.json").write_text(

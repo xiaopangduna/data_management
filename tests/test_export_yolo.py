@@ -24,11 +24,33 @@ def test_cli_excludes_dup_repeat_drop_by_default():
         "--dataset", "demo", "--output-dir", "out", "--tags", "train",
     ])
     assert args.exclude_tags == ["dup_repeat_drop"]
+    assert args.split == "train"
     args = export.parse_args([
         "--dataset", "demo", "--output-dir", "out", "--tags", "train",
         "--exclude-tags", "dup_repeat_drop,dup_near",
+        "--split", "train_v003",
     ])
     assert args.exclude_tags == ["dup_repeat_drop", "dup_near"]
+    assert args.split == "train_v003"
+
+
+def test_check_output_allows_other_splits(tmp_path):
+    output = tmp_path / "out"
+    train_images = output / "images" / "train"
+    train_images.mkdir(parents=True)
+    (train_images / "a.jpg").write_bytes(b"x")
+    (output / "dataset.yaml").write_text("names: {0: baby_head}\n")
+    (output / "images" / "test").mkdir(parents=True)
+    export.check_output(output, "test")
+
+
+def test_check_output_rejects_same_split(tmp_path):
+    output = tmp_path / "out"
+    test_images = output / "images" / "test"
+    test_images.mkdir(parents=True)
+    (test_images / "a.jpg").write_bytes(b"x")
+    with pytest.raises(ValueError, match="empty or absent"):
+        export.check_output(output, "test")
 
 
 def test_name_rules():
@@ -70,3 +92,16 @@ def test_export_duplicate_names_and_negatives(tmp_path, mode):
     lines = (output / "labels/train/baby_head__adult_head_000001.txt").read_text().splitlines()
     assert [line.split()[0] for line in lines] == ["1", "0"]
     assert (output / "dataset.yaml").is_file()
+
+
+def test_export_uses_custom_split_folder(tmp_path):
+    source = tmp_path / "src.jpg"
+    Image.new("RGB", (10, 10), "red").save(source)
+    output = tmp_path / "out"
+    with export.make_exporter(output, ["baby_head"], "copy", split="train_v003") as writer:
+        writer.export_sample(str(source), labels("baby_head"))
+    image = output / "images/train_v003/baby_head_000001.jpg"
+    annotation = output / "labels/train_v003/baby_head_000001.txt"
+    assert image.is_file() and not image.is_symlink()
+    assert annotation.is_file()
+    assert not (output / "images/train").exists()
