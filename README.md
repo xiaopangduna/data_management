@@ -13,6 +13,9 @@ curl -fL -o mongodb-database-tools.deb \
   https://fastdl.mongodb.org/tools/db/mongodb-database-tools-ubuntu2404-x86_64-100.18.0.deb
 sudo apt install -y ./mongodb-database-tools.deb
 mongodump --version
+
+.venv/lib/python3.12/site-packages/fiftyone/db/bin/mongod --dbpath /home/lee/huangwenhua/.fiftyone/mongo --port 27018 --fork --logpath /home/lee/huangwenhua/.fiftyone/mongod.log
+pgrep -af 'mongod.*27018'
 export FIFTYONE_DATABASE_URI=mongodb://127.0.0.1:27018
 # 备份
 STAMP=$(date +%Y%m%d)
@@ -72,13 +75,16 @@ uv run python scripts/update_media.py --dataset-name BBM08S_head
 
 ### Step 3：去重
 
-不删磁盘文件。精确重复（同 `sha256`）从库里删多余张；相似图（pHash Hamming ≤ 2）打 `dup_near`。
+不删磁盘文件。默认只打标，不从库里删样本。
+
+完全重复（同 `sha256`）：全员 `dup_repeat`，当前保留张 `dup_repeat_keep`，建议删除 `dup_repeat_drop`。近似重复（pHash Hamming ≤ 2）：全员 `dup_near`（含当前保留张）。`dup_repeat_drop` 不参与近重复聚类。分组字段：`dup_group` / `dup_of`。
 
 ```bash
+uv run python scripts/dedup_fiftyone.py --dataset-name BBM08S_head --dry-run
 uv run python scripts/dedup_fiftyone.py --dataset-name BBM08S_head
 ```
 
-在 App 里只勾 `dup_near` 复核。CSV：`tmp/dedup_<数据集>*.csv`。
+App 里用 `dup_repeat` / `dup_repeat_drop` / `dup_near` 复核，按 `dup_group` 分组。CSV：`tmp/dedup_<数据集>*.csv`。导出默认排除 `dup_repeat_drop`。
 
 ### Step 4：导出给 X-AnyLabeling
 
@@ -112,7 +118,7 @@ uv run python scripts/update_xlabel_labels.py \
 
 ### Step 6：导出 YOLO 训练
 
-按 tag **并集**筛样本，写出一份目录。`--output-dir` 须为空。
+按 tag **并集**筛样本，写出一份目录。默认排除 `dup_repeat_drop`。`--output-dir` 须为空。
 
 ```bash
 uv run python scripts/export_yolo.py \

@@ -32,6 +32,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--tags", required=True, type=names,
                         help="Comma-separated sample tags; match ANY tag (union).")
+    parser.add_argument("--exclude-tags", type=names, default=["dup_repeat_drop"],
+                        help="Exclude samples with ANY of these tags. Default: dup_repeat_drop.")
     parser.add_argument("--classes", type=names,
                         help="Classes to export in class ID order; otherwise all classes sorted from selected samples.")
     parser.add_argument("--export-media", choices=("symlink", "copy"), default="symlink")
@@ -107,6 +109,8 @@ def export_dataset(args: argparse.Namespace) -> dict:
     if missing_tags:
         raise ValueError(f"Unknown sample tags: {', '.join(missing_tags)}")
     view = dataset.match_tags(args.tags, all=False)
+    if args.exclude_tags:
+        view = view.exclude(dataset.match_tags(args.exclude_tags, all=False))
     count = len(view)
     if not count:
         raise ValueError("No samples match the requested tags")
@@ -136,6 +140,7 @@ def export_dataset(args: argparse.Namespace) -> dict:
         "dataset": args.dataset,
         "label_field": args.label_field,
         "tags": args.tags,
+        "exclude_tags": args.exclude_tags,
         "tag_matching": "union",
         "split": "train",
         "output_dir": str(output),

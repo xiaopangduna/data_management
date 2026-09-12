@@ -1,12 +1,12 @@
-"""Delete exact duplicates and tag near-duplicates on an existing FiftyOne dataset.
+"""Tag exact and near duplicates on an existing FiftyOne dataset.
 
-Exact matches share ``sha256``: keep one sample, delete the rest from the
-dataset (not from disk). Near matches share a 64-bit pHash within
-``--hamming-max``: keep one sample untagged, tag the rest ``dup_near``, and
-write ``dup_group`` / ``dup_of``. Every run writes CSVs under ``tmp/`` in the
-current working directory (including ``--dry-run``): a full archive, an exact
-file, and slim near shards of 200 groups each. Does not create or delete
-datasets.
+Exact matches share ``sha256``. Every member gets ``dup_repeat``; one sample
+gets ``dup_repeat_keep`` and the rest ``dup_repeat_drop``. Near matches share
+a 64-bit pHash within ``--hamming-max``: every member gets ``dup_near``.
+Samples tagged ``dup_repeat_drop`` are left out of near clustering. Both kinds
+write ``dup_group`` / ``dup_of`` (``exact:<sha256>`` or ``near:<phash>``).
+Tags only; does not delete samples or files. Every run writes CSVs under
+``tmp/`` (including ``--dry-run``). Does not create or delete datasets.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import logging
 import sys
 import warnings
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 warnings.filterwarnings(
@@ -32,9 +32,21 @@ logger = logging.getLogger(__name__)
 
 SHA256_FIELD = "sha256"
 PHASH_FIELD = "phash"
+DUP_REPEAT_TAG = "dup_repeat"
+DUP_REPEAT_KEEP_TAG = "dup_repeat_keep"
+DUP_REPEAT_DROP_TAG = "dup_repeat_drop"
 DUP_NEAR_TAG = "dup_near"
 DUP_GROUP_FIELD = "dup_group"
 DUP_OF_FIELD = "dup_of"
+EXACT_GROUP_PREFIX = "exact:"
+NEAR_GROUP_PREFIX = "near:"
+DUP_ALL_TAGS = (
+    DUP_REPEAT_TAG,
+    DUP_REPEAT_KEEP_TAG,
+    DUP_REPEAT_DROP_TAG,
+    DUP_NEAR_TAG,
+)
+DUP_ALL_TAG_SET = frozenset(DUP_ALL_TAGS)
 DEFAULT_HAMMING_MAX = 2
 PHASH_BITS = 64
 REPORT_COLUMNS = (
@@ -72,20 +84,50 @@ class SampleRef:
     sha256: str
     phash: str
     area: int
-    has_dup_near: bool
-    has_dup_group: bool
+    tags: tuple[str, ...]
+    dup_group: str
+    dup_of: str
+
+    def has_tag(self, tag: str) -> bool:
+        """Return True when ``tag`` is already on the sample."""
+        return tag in self.tags
 
 
 @dataclass(frozen=True)
-class ExactDeleteRow:
-    """One deleted exact-duplicate sample."""
+class GroupDecision:
+    """Keep/drop roles for one exact-duplicate group."""
 
-    sha256: str
-    kept_filepath: str
-    kept_relpath: str
-    deleted_id: str
-    deleted_filepath: str
-    deleted_relpath: str
+    keeper: SampleRef | None
+    roles: dict[str, str]
+    keep_count: int
+    is_new: bool
+
+
+@dataclass(frozen=True)
+class SampleUpdate:
+    """Desired tags and grouping fields for one sample."""
+
+    tags: tuple[str, ...]
+    dup_group: str
+    dup_of: str
+
+
+@dataclass
+class DedupPlan:
+    """Exact/near groups, field updates, and report counts."""
+
+    exact_groups: dict[str, list[SampleRef]]
+    exact_decisions: dict[str, GroupDecision]
+    near_groups: dict[str, list[SampleRef]]
+    near_keepers: dict[str, SampleRef]
+    updates: dict[str, SampleUpdate]
+    drop_ids: list[str]
+    exact_keep: int = 0
+    exact_drop: int = 0
+    exact_keep_conflict: int = 0
+    near_members: int = 0
+    stale_cleared: int = 0
+    refs: list[SampleRef] = field(default_factory=list)
 
 
 def nonempty(value: str) -> str:
@@ -107,7 +149,7 @@ def nonnegative_int(value: str) -> int:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse CLI arguments for dataset deduplication."""
     parser = argparse.ArgumentParser(
-        description="Delete exact duplicates and tag near-duplicates on an existing FiftyOne dataset."
+        description="Tag exact and near duplicates on an existing FiftyOne dataset."
     )
     parser.add_argument(
         "--dataset-name",
@@ -124,7 +166,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Count and write CSV only; do not delete or tag samples.",
+        help="Count and write CSV only; do not tag samples.",
     )
     return parser.parse_args(argv)
 
@@ -143,6 +185,16 @@ def field_values(dataset: fo.Dataset, field_name: str) -> list[object]:
     return dataset.values(field_name)
 
 
+def exact_group_id(sha256: str) -> str:
+    """Return the ``dup_group`` value for an exact sha256 group."""
+    return f"{EXACT_GROUP_PREFIX}{sha256}"
+
+
+def near_group_id(phash: str) -> str:
+    """Return the ``dup_group`` value for a near pHash cluster."""
+    return f"{NEAR_GROUP_PREFIX}{phash}"
+
+
 def collect_sample_refs(dataset: fo.Dataset) -> list[SampleRef]:
     """Load grouping fields in bulk instead of iterating Sample objects."""
     ids = dataset.values("id")
@@ -152,6 +204,7 @@ def collect_sample_refs(dataset: fo.Dataset) -> list[SampleRef]:
     phashes = field_values(dataset, PHASH_FIELD)
     tags_list = field_values(dataset, "tags")
     dup_groups = field_values(dataset, DUP_GROUP_FIELD)
+    dup_ofs = field_values(dataset, DUP_OF_FIELD)
     if dataset.has_field("metadata"):
         widths = dataset.values("metadata.width")
         heights = dataset.values("metadata.height")
@@ -171,8 +224,9 @@ def collect_sample_refs(dataset: fo.Dataset) -> list[SampleRef]:
                 sha256=normalize_text(sha256s[index]).lower(),
                 phash=normalize_text(phashes[index]).lower(),
                 area=int(width) * int(height),
-                has_dup_near=DUP_NEAR_TAG in tags,
-                has_dup_group=bool(normalize_text(dup_groups[index])),
+                tags=tuple(str(tag) for tag in tags),
+                dup_group=normalize_text(dup_groups[index]),
+                dup_of=normalize_text(dup_ofs[index]),
             )
         )
     return refs
@@ -204,26 +258,57 @@ def exact_groups_from_refs(refs: list[SampleRef]) -> dict[str, list[SampleRef]]:
     return {key: group for key, group in group_refs_by_key(refs, "sha256").items() if len(group) >= 2}
 
 
-def exact_delete_rows(groups: dict[str, list[SampleRef]]) -> list[ExactDeleteRow]:
-    """Build delete records for sha256 groups larger than one."""
-    rows: list[ExactDeleteRow] = []
-    for sha256, group in groups.items():
+def resolve_exact_decision(group: list[SampleRef]) -> GroupDecision:
+    """Assign keep/drop without reshuffling a group that already has decisions.
+
+    New groups (no keep or drop tags) use ``pick_keeper``. Existing keep/drop
+    tags stay as they are. New members of a decided group become drop when a
+    keeper already exists. Zero or multiple keeps are logged, not fixed.
+    """
+    keeps = [ref for ref in group if ref.has_tag(DUP_REPEAT_KEEP_TAG)]
+    drops = [ref for ref in group if ref.has_tag(DUP_REPEAT_DROP_TAG)]
+    both = [ref for ref in group if ref.has_tag(DUP_REPEAT_KEEP_TAG) and ref.has_tag(DUP_REPEAT_DROP_TAG)]
+    if both:
+        logger.warning(
+            "Exact group sha256=%s has %s sample(s) tagged both keep and drop",
+            group[0].sha256,
+            len(both),
+        )
+    decided = bool(keeps or drops)
+    roles: dict[str, str] = {}
+    if not decided:
         keeper = pick_keeper(group)
         for ref in group:
-            if ref.id == keeper.id:
-                continue
-            rows.append(
-                ExactDeleteRow(
-                    sha256=sha256,
-                    kept_filepath=keeper.filepath,
-                    kept_relpath=keeper.relpath,
-                    deleted_id=ref.id,
-                    deleted_filepath=ref.filepath,
-                    deleted_relpath=ref.relpath,
-                )
-            )
-    rows.sort(key=lambda row: (row.sha256, row.deleted_relpath, row.deleted_filepath, row.deleted_id))
-    return rows
+            roles[ref.id] = "keep" if ref.id == keeper.id else "drop"
+        return GroupDecision(keeper=keeper, roles=roles, keep_count=1, is_new=True)
+
+    if len(keeps) == 1:
+        keeper = keeps[0]
+    elif len(keeps) > 1:
+        logger.warning(
+            "Exact group sha256=%s has %s keep tags; leaving them unchanged",
+            group[0].sha256,
+            len(keeps),
+        )
+        keeper = pick_keeper(keeps)
+    else:
+        logger.warning(
+            "Exact group sha256=%s has drop tags but no keep; not assigning a keeper",
+            group[0].sha256,
+        )
+        keeper = None
+
+    for ref in group:
+        if ref.has_tag(DUP_REPEAT_KEEP_TAG):
+            roles[ref.id] = "keep"
+        elif ref.has_tag(DUP_REPEAT_DROP_TAG):
+            roles[ref.id] = "drop"
+        elif keeper is not None:
+            roles[ref.id] = "drop"
+        else:
+            roles[ref.id] = ""
+    keep_count = sum(1 for role in roles.values() if role == "keep")
+    return GroupDecision(keeper=keeper, roles=roles, keep_count=keep_count, is_new=False)
 
 
 def parse_phash_int(phash: str) -> int | None:
@@ -321,7 +406,7 @@ def cluster_phashes(phashes: list[str], hamming_max: int) -> dict[str, str]:
 
 
 def near_groups(refs: list[SampleRef], hamming_max: int) -> dict[str, list[SampleRef]]:
-    """Group remaining samples by pHash Hamming distance."""
+    """Group samples by pHash Hamming distance."""
     phashes = [ref.phash for ref in refs if ref.phash and parse_phash_int(ref.phash) is not None]
     cluster_of = cluster_phashes(phashes, hamming_max)
     grouped: dict[str, list[SampleRef]] = defaultdict(list)
@@ -333,39 +418,98 @@ def near_groups(refs: list[SampleRef], hamming_max: int) -> dict[str, list[Sampl
     return {key: group for key, group in grouped.items() if len(group) >= 2}
 
 
-def sample_already_marked(ref: SampleRef) -> bool:
-    """Return True when near-dup fields should be left alone."""
-    return ref.has_dup_near or ref.has_dup_group
+def compose_tags(existing: tuple[str, ...], desired_dup: set[str]) -> tuple[str, ...]:
+    """Keep non-dup tags and replace dup tags with ``desired_dup``."""
+    kept = [tag for tag in existing if tag not in DUP_ALL_TAG_SET]
+    kept.extend(tag for tag in DUP_ALL_TAGS if tag in desired_dup)
+    return tuple(kept)
 
 
-def plan_near_updates(
-    groups: dict[str, list[SampleRef]],
-) -> tuple[dict[str, tuple[str, str, bool]], int]:
-    """Return sample id -> (dup_group, dup_of, add_dup_near) and skip count.
-
-    Keepers get ``dup_group`` and empty ``dup_of`` without ``dup_near``.
-    Extras get ``dup_near`` and ``dup_of`` pointing at the keeper filepath.
-    Already tagged samples are left unchanged.
-    """
-    updates: dict[str, tuple[str, str, bool]] = {}
-    skipped = 0
-    for group in groups.values():
-        keeper = pick_keeper(group)
-        dup_group = keeper.phash
-        for ref in group:
-            is_extra = ref.id != keeper.id
-            if sample_already_marked(ref):
-                skipped += 1
-                continue
-            updates[ref.id] = (dup_group, keeper.filepath if is_extra else "", is_extra)
-    return updates, skipped
+def desired_dup_tags(role: str, in_exact: bool, in_near: bool, existing: tuple[str, ...]) -> set[str]:
+    """Return the dup tags a sample should have after this run."""
+    tags: set[str] = set()
+    if in_exact:
+        tags.add(DUP_REPEAT_TAG)
+        if role == "keep":
+            tags.add(DUP_REPEAT_KEEP_TAG)
+        elif role == "drop":
+            tags.add(DUP_REPEAT_DROP_TAG)
+        if DUP_REPEAT_KEEP_TAG in existing and DUP_REPEAT_DROP_TAG in existing:
+            tags.add(DUP_REPEAT_KEEP_TAG)
+            tags.add(DUP_REPEAT_DROP_TAG)
+    if in_near:
+        tags.add(DUP_NEAR_TAG)
+    return tags
 
 
-def add_dup_near_tag(sample: fo.Sample) -> None:
-    """Add ``dup_near`` if it is not already present."""
-    tags = list(sample.tags or [])
-    if DUP_NEAR_TAG not in tags:
-        sample.tags = tags + [DUP_NEAR_TAG]
+def sample_changed(ref: SampleRef, update: SampleUpdate) -> bool:
+    """Return True when tags or grouping fields differ from the plan."""
+    return ref.tags != update.tags or ref.dup_group != update.dup_group or ref.dup_of != update.dup_of
+
+
+def build_dedup_plan(refs: list[SampleRef], hamming_max: int) -> DedupPlan:
+    """Compute exact/near groups, tags, and field updates without writing."""
+    exact = exact_groups_from_refs(refs)
+    decisions = {sha256: resolve_exact_decision(group) for sha256, group in exact.items()}
+    drop_ids = [
+        ref.id
+        for sha256, group in exact.items()
+        for ref in group
+        if decisions[sha256].roles.get(ref.id) == "drop"
+        and not (ref.has_tag(DUP_REPEAT_KEEP_TAG) and ref.has_tag(DUP_REPEAT_DROP_TAG))
+    ]
+    drop_id_set = set(drop_ids)
+    near_refs = [ref for ref in refs if ref.id not in drop_id_set]
+    near = near_groups(near_refs, hamming_max)
+    near_keepers = {key: pick_keeper(group) for key, group in near.items()}
+
+    exact_of = {ref.id: sha256 for sha256, group in exact.items() for ref in group}
+    near_of = {ref.id: key for key, group in near.items() for ref in group}
+
+    updates: dict[str, SampleUpdate] = {}
+    stale_cleared = 0
+    for ref in refs:
+        sha256 = exact_of.get(ref.id)
+        near_key = near_of.get(ref.id)
+        in_exact = sha256 is not None
+        in_near = near_key is not None
+        role = decisions[sha256].roles.get(ref.id, "") if in_exact else ""
+        desired = desired_dup_tags(role, in_exact, in_near, ref.tags)
+        if in_exact:
+            keeper = decisions[sha256].keeper
+            group_id = exact_group_id(sha256)
+            dup_of = keeper.filepath if role == "drop" and keeper is not None else ""
+        elif in_near:
+            keeper = near_keepers[near_key]
+            group_id = near_group_id(near_key)
+            dup_of = keeper.filepath if ref.id != keeper.id else ""
+        else:
+            group_id = ""
+            dup_of = ""
+        update = SampleUpdate(tags=compose_tags(ref.tags, desired), dup_group=group_id, dup_of=dup_of)
+        if sample_changed(ref, update):
+            updates[ref.id] = update
+            removed = (set(ref.tags) & DUP_ALL_TAG_SET) - desired
+            if removed and not in_exact and not in_near:
+                stale_cleared += 1
+
+    exact_keep = sum(1 for decision in decisions.values() for role in decision.roles.values() if role == "keep")
+    exact_drop = sum(1 for decision in decisions.values() for role in decision.roles.values() if role == "drop")
+    exact_keep_conflict = sum(1 for decision in decisions.values() if decision.keep_count != 1)
+    return DedupPlan(
+        exact_groups=exact,
+        exact_decisions=decisions,
+        near_groups=near,
+        near_keepers=near_keepers,
+        updates=updates,
+        drop_ids=drop_ids,
+        exact_keep=exact_keep,
+        exact_drop=exact_drop,
+        exact_keep_conflict=exact_keep_conflict,
+        near_members=sum(len(group) for group in near.values()),
+        stale_cleared=stale_cleared,
+        refs=refs,
+    )
 
 
 def report_dir() -> Path:
@@ -381,7 +525,7 @@ def csv_row(
     action: str,
     dup_group: str,
     ref: SampleRef,
-    keeper: SampleRef,
+    keeper: SampleRef | None,
 ) -> dict[str, str]:
     """Build one report CSV row."""
     return {
@@ -394,29 +538,42 @@ def csv_row(
         "relpath": ref.relpath,
         "sha256": ref.sha256,
         "phash": ref.phash,
-        "kept_sample_id": keeper.id,
-        "kept_filepath": keeper.filepath,
-        "kept_relpath": keeper.relpath,
+        "kept_sample_id": keeper.id if keeper is not None else "",
+        "kept_filepath": keeper.filepath if keeper is not None else "",
+        "kept_relpath": keeper.relpath if keeper is not None else "",
     }
 
 
-def build_report_rows(
-    dataset_name: str,
-    exact_groups: dict[str, list[SampleRef]],
-    near: dict[str, list[SampleRef]],
-) -> list[dict[str, str]]:
+def exact_action(role: str) -> str:
+    """CSV action for an exact-group member."""
+    if role == "keep":
+        return "keep"
+    if role == "drop":
+        return "drop"
+    return "member"
+
+
+def build_report_rows(dataset_name: str, plan: DedupPlan) -> list[dict[str, str]]:
     """List every sample in exact and near groups, keepers included."""
     rows: list[dict[str, str]] = []
-    for sha256, group in exact_groups.items():
-        keeper = pick_keeper(group)
+    for sha256, group in plan.exact_groups.items():
+        decision = plan.exact_decisions[sha256]
         for ref in group:
-            action = "keep" if ref.id == keeper.id else "delete"
-            rows.append(csv_row(dataset_name, "exact", action, sha256, ref, keeper))
-    for group in near.values():
-        keeper = pick_keeper(group)
+            rows.append(
+                csv_row(
+                    dataset_name,
+                    "exact",
+                    exact_action(decision.roles.get(ref.id, "")),
+                    exact_group_id(sha256),
+                    ref,
+                    decision.keeper,
+                )
+            )
+    for key, group in plan.near_groups.items():
+        keeper = plan.near_keepers[key]
         for ref in group:
             action = "keep" if ref.id == keeper.id else "tag_dup_near"
-            rows.append(csv_row(dataset_name, "near", action, keeper.phash, ref, keeper))
+            rows.append(csv_row(dataset_name, "near", action, near_group_id(key), ref, keeper))
     rows.sort(
         key=lambda row: (
             row["kind"],
@@ -526,29 +683,25 @@ def write_dedup_csvs(dataset_name: str, rows: list[dict[str, str]]) -> dict[str,
     }
 
 
-def apply_exact_deletes(dataset: fo.Dataset, rows: list[ExactDeleteRow]) -> int:
-    """Delete extra exact-duplicate samples. Returns deleted count."""
-    ids = [row.deleted_id for row in rows]
-    if not ids:
-        return 0
-    dataset.delete_samples(ids)
-    return len(ids)
+def ensure_dup_fields(dataset: fo.Dataset) -> None:
+    """Add grouping fields when the dataset does not already have them."""
+    if not dataset.has_field(DUP_GROUP_FIELD):
+        dataset.add_sample_field(DUP_GROUP_FIELD, fo.StringField)
+    if not dataset.has_field(DUP_OF_FIELD):
+        dataset.add_sample_field(DUP_OF_FIELD, fo.StringField)
 
 
-def apply_near_updates(
-    dataset: fo.Dataset,
-    updates: dict[str, tuple[str, str, bool]],
-) -> int:
-    """Write near-dup fields and tags. Returns samples written."""
+def apply_updates(dataset: fo.Dataset, updates: dict[str, SampleUpdate]) -> int:
+    """Write planned tags and grouping fields. Returns samples written."""
     if not updates:
         return 0
+    ensure_dup_fields(dataset)
     written = 0
     for sample in dataset.select(list(updates)).iter_samples(autosave=True):
-        dup_group, dup_of, add_tag = updates[str(sample.id)]
-        sample[DUP_GROUP_FIELD] = dup_group
-        sample[DUP_OF_FIELD] = dup_of
-        if add_tag:
-            add_dup_near_tag(sample)
+        update = updates[str(sample.id)]
+        sample.tags = list(update.tags)
+        sample[DUP_GROUP_FIELD] = update.dup_group
+        sample[DUP_OF_FIELD] = update.dup_of
         written += 1
     return written
 
@@ -564,54 +717,43 @@ def run_dedup(
     hamming_max: int,
     dry_run: bool,
 ) -> None:
-    """Count or apply exact deletes and near-dup tags."""
+    """Count or apply exact/near tags. Does not delete samples."""
     refs = collect_sample_refs(dataset)
     missing_sha256 = sum(1 for ref in refs if not ref.sha256)
     missing_phash = sum(
         1 for ref in refs if not ref.phash or parse_phash_int(ref.phash) is None
     )
-
-    exact_groups = exact_groups_from_refs(refs)
-    delete_rows = exact_delete_rows(exact_groups)
-    deleted_ids = {row.deleted_id for row in delete_rows}
-    remaining = [ref for ref in refs if ref.id not in deleted_ids]
-    groups = near_groups(remaining, hamming_max)
-    updates, already_tagged = plan_near_updates(groups)
-
-    near_to_tag = sum(1 for _group, dup_of, add_tag in updates.values() if add_tag)
-    csv_rows = build_report_rows(dataset.name, exact_groups, groups)
+    plan = build_dedup_plan(refs, hamming_max)
+    csv_rows = build_report_rows(dataset.name, plan)
     csv_info = write_dedup_csvs(dataset.name, csv_rows)
 
     print_report(
         {
-            "mode": "dry-run" if dry_run else "dedup",
+            "mode": "dry-run" if dry_run else "tag",
             "dataset_name": dataset.name,
             "hamming_max": hamming_max,
             "samples": len(refs),
             "missing_sha256": missing_sha256,
             "missing_phash": missing_phash,
-            "exact_groups": len(exact_groups),
-            "exact_to_delete": len(delete_rows),
-            "near_groups": len(groups),
-            "near_to_tag": near_to_tag,
-            "already_tagged": already_tagged,
+            "exact_groups": len(plan.exact_groups),
+            "exact_keep": plan.exact_keep,
+            "exact_drop": plan.exact_drop,
+            "exact_keep_conflict": plan.exact_keep_conflict,
+            "near_groups": len(plan.near_groups),
+            "near_members": plan.near_members,
+            "to_update": len(plan.updates),
+            "stale_cleared": plan.stale_cleared,
             **csv_info,
         }
     )
     if dry_run:
         return
 
-    deleted_count = 0
-    if delete_rows:
-        deleted_count = apply_exact_deletes(dataset, delete_rows)
-
-    tagged_count = apply_near_updates(dataset, updates)
-
+    tagged_count = apply_updates(dataset, plan.updates)
     dataset.save()
     print_report(
         {
-            "exact_deleted": deleted_count,
-            "near_tagged": tagged_count,
+            "tagged": tagged_count,
             "csv_dir": csv_info["csv_dir"],
             "dedup_done": "true",
         }
@@ -619,7 +761,7 @@ def run_dedup(
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run dry-run counting or apply dedup to an existing dataset."""
+    """Run dry-run counting or apply dedup tags to an existing dataset."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)7s] %(name)s:%(lineno)d - %(message)s",

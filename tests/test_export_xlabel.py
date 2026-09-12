@@ -19,9 +19,10 @@ def test_cli_defaults_and_removed_options():
     base = ["--dataset-name", "test", "--out-dir", "out", "--sample-tags", "test,review"]
     args = export.parse_args(base)
     assert args.sample_tags == ["test", "review"]
+    assert args.exclude_tags == ["dup_repeat_drop"]
     assert args.label_field == "ground_truth"
     assert args.labels is None and args.export_labels is None
-    for option in ("--include-tags", "--exclude-tags", "--exclude-sample-tags", "--class-names"):
+    for option in ("--include-tags", "--exclude-sample-tags", "--class-names"):
         with pytest.raises(SystemExit):
             export.parse_args(base + [option, "person"])
 
@@ -48,15 +49,21 @@ def test_intersection_and_export_from_same_field(tmp_path):
             sample(["test", "review"], ["person"]),
             sample(["test", "review"], []),
             sample(["test", "review"], None),
+            sample(["test", "review", "dup_repeat_drop"], ["person", "adult_head", "baby_head"]),
         ]
         dataset.add_samples(samples)
-        view = export.filtered_view(dataset, ["test", "review"], "custom", ["person", "adult_head"])
+        view = export.filtered_view(
+            dataset, ["test", "review"], "custom", ["person", "adult_head"], ["dup_repeat_drop"]
+        )
         assert view.values("id") == [samples[0].id]
         plan = export.collect_export_plan(view, None, "custom")
         assert [shape["label"] for shape in plan.to_write[0].shapes] == ["person", "adult_head", "baby_head"]
         plan = export.collect_export_plan(view, {"baby_head"}, "custom")
         assert [shape["label"] for shape in plan.to_write[0].shapes] == ["baby_head"]
-        assert len(export.filtered_view(dataset, ["test", "review"], "custom")) == 4
+        assert len(export.filtered_view(dataset, ["test", "review"], "custom")) == 5
+        assert len(export.filtered_view(
+            dataset, ["test", "review"], "custom", exclude_tags=["dup_repeat_drop"]
+        )) == 4
         with pytest.raises(ValueError, match="does not exist"):
             export.filtered_view(dataset, ["test"], "missing")
         with pytest.raises(ValueError, match="Detections"):

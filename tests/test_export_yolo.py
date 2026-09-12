@@ -19,6 +19,18 @@ def labels(*names):
     ])
 
 
+def test_cli_excludes_dup_repeat_drop_by_default():
+    args = export.parse_args([
+        "--dataset", "demo", "--output-dir", "out", "--tags", "train",
+    ])
+    assert args.exclude_tags == ["dup_repeat_drop"]
+    args = export.parse_args([
+        "--dataset", "demo", "--output-dir", "out", "--tags", "train",
+        "--exclude-tags", "dup_repeat_drop,dup_near",
+    ])
+    assert args.exclude_tags == ["dup_repeat_drop", "dup_near"]
+
+
 def test_name_rules():
     classes = ["baby_head", "adult_head"]
     assert export.export_stem(labels("adult_head", "baby_head", "baby_head"), classes, 1) == "baby_head__adult_head_000001"

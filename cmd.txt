@@ -4,6 +4,7 @@ mkdir -p /home/lee/huangwenhua/.fiftyone/mongo
 # 系统未装 mongod 时用 FiftyOne 自带的（.venv/lib/.../fiftyone/db/bin/mongod）
 .venv/lib/python3.12/site-packages/fiftyone/db/bin/mongod --dbpath /home/lee/huangwenhua/.fiftyone/mongo --port 27018 --fork --logpath /home/lee/huangwenhua/.fiftyone/mongod.log
 export FIFTYONE_DATABASE_URI=mongodb://127.0.0.1:27018
+
 uv run fiftyone app launch BBM08S_head --port 5152
 
 uv run fiftyone datasets list

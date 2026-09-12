@@ -109,6 +109,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Require ALL sample tags (comma-separated); intersect with --labels.",
     )
     parser.add_argument(
+        "--exclude-tags",
+        default=["dup_repeat_drop"],
+        type=class_names,
+        help="Exclude samples with ANY of these tags. Default: dup_repeat_drop.",
+    )
+    parser.add_argument(
         "--label-field", default=DETECT_FIELD, type=nonempty,
         help="Detections field used for both filtering and export (default: ground_truth).",
     )
@@ -217,6 +223,7 @@ def filtered_view(
     sample_tags: list[str],
     label_field: str = DETECT_FIELD,
     labels: list[str] | None = None,
+    exclude_tags: list[str] | None = None,
 ) -> fo.DatasetView:
     """Intersect all sample tags and all labels without filtering any boxes."""
     if not dataset.has_field(label_field):
@@ -225,6 +232,8 @@ def filtered_view(
     if not isinstance(field, fo.EmbeddedDocumentField) or field.document_type is not fo.Detections:
         raise ValueError(f"Label field must contain Detections: {label_field}")
     view = dataset.match_tags(sample_tags, bool=True, all=True)
+    if exclude_tags:
+        view = view.exclude(dataset.match_tags(exclude_tags, all=False))
     if labels:
         view = view.match({f"{label_field}.detections.label": {"$all": labels}})
     return view
@@ -407,7 +416,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     dataset = fo.load_dataset(args.dataset_name)
     try:
-        view = filtered_view(dataset, args.sample_tags, args.label_field, args.labels)
+        view = filtered_view(
+            dataset, args.sample_tags, args.label_field, args.labels, args.exclude_tags
+        )
     except ValueError as exc:
         logger.error("%s", exc)
         return 1
@@ -423,6 +434,7 @@ def main(argv: list[str] | None = None) -> int:
             "out_dir": str(out_dir.resolve()),
             "export_media": args.export_media,
             "sample_tags": ",".join(args.sample_tags),
+            "exclude_tags": ",".join(args.exclude_tags) if args.exclude_tags else "none",
             "label_field": args.label_field,
             "labels": ",".join(args.labels) if args.labels else "none",
             "export_labels": ",".join(args.export_labels) if args.export_labels else "all",
