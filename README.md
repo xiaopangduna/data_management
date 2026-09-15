@@ -149,7 +149,7 @@ uv run python scripts/export_yolo.py \
 - 结构化值用字段：`filepath`、`relpath`、`sha256`、`phash`、`dup_group`、`dup_of`、`metadata`。
 - App 用来看图、筛数据、打工作流 tag，不在里面画框。工作流 tag 打在 sample 上；只有要标记单个框时才用 label tag。
 
-脚本按动词前缀：`import_` 入库，`update_` 改已有库，`export_` 导出，`convert_` 只转文件，`dedup_` 去重。
+脚本按动词前缀：`import_` 入库，`update_` 改已有库，`export_` 导出，`convert_` 只转文件，`dedup_` 去重，`extract_` 按文件名抽磁盘文件。
 
 ```
 scripts/
@@ -158,6 +158,7 @@ scripts/
   dedup_fiftyone.py
   export_xlabel.py / export_yolo.py
   convert_yolo_to_xlabel.py
+  extract_by_name.py
 ```
 
 ```bash
@@ -172,6 +173,22 @@ uv run python scripts/rename_images_by_hash.py /path/to/images
 ```
 
 需要处理各级子目录时增加 `--recursive`。扩展名会转为小写；相同内容、相同扩展名的重复图片以 `-2`、`-3` 保留。脚本不会修改标注文件或 FiftyOne 中已有的文件路径，因此应在入库前运行。
+
+## 按文件名抽取
+
+名单目录只提供文件名；从若干源目录抽出重名文件，复制或软链到输出目录。不读 FiftyOne。默认按 **stem**（不含扩展名）匹配，只扫当前层；输出按源目录名分子目录，冲突不覆盖。先 `--dry-run`。
+
+```bash
+uv run python scripts/extract_by_name.py \
+  --names-dir /path/A \
+  --source-dir /path/B \
+  --source-dir /path/C \
+  --source-dir /path/D \
+  --out-dir /path/out \
+  --dry-run
+```
+
+`--match name` 要求扩展名相同（大小写不敏感）。`--flatten` 打平到 `--out-dir`。`--export-media symlink` 建软链。`--recursive` 递归。报告每次覆盖写入 `tmp/extract_by_name.csv`。有缺失或冲突时退出码 2，已命中文件仍会写出。
 
 ## 按图片内容追加 tags
 
