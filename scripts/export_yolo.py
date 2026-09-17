@@ -36,10 +36,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", required=True, type=nonempty)
     parser.add_argument("--label-field", default="ground_truth", type=nonempty)
-    parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument("--out-dir", required=True, type=Path)
     parser.add_argument("--split", default="train", type=split_name,
                         help="Folder name under images/ and labels/. Default: train.")
-    parser.add_argument("--tags", required=True, type=names,
+    parser.add_argument("--sample-tags", required=True, type=names,
                         help="Comma-separated sample tags; match ANY tag (union).")
     parser.add_argument("--exclude-tags", type=names, default=["dup_repeat_drop"],
                         help="Exclude samples with ANY of these tags. Default: dup_repeat_drop.")
@@ -111,7 +111,7 @@ def make_exporter(output: Path, classes: list[str], export_media: str, split: st
 def export_dataset(args: argparse.Namespace) -> dict:
     import fiftyone as fo
 
-    output = args.output_dir.expanduser().absolute()
+    output = args.out_dir.expanduser().absolute()
     check_output(output, args.split)
     dataset = fo.load_dataset(args.dataset)
     if dataset.media_type != "image":
@@ -119,10 +119,10 @@ def export_dataset(args: argparse.Namespace) -> dict:
     field = dataset.get_field_schema().get(args.label_field)
     if not isinstance(field, fo.EmbeddedDocumentField) or field.document_type != fo.Detections:
         raise ValueError(f"Label field must be fo.Detections: {args.label_field}")
-    missing_tags = sorted(set(args.tags) - set(dataset.distinct("tags")))
+    missing_tags = sorted(set(args.sample_tags) - set(dataset.distinct("tags")))
     if missing_tags:
         raise ValueError(f"Unknown sample tags: {', '.join(missing_tags)}")
-    view = dataset.match_tags(args.tags, all=False)
+    view = dataset.match_tags(args.sample_tags, all=False)
     if args.exclude_tags:
         view = view.exclude(dataset.match_tags(args.exclude_tags, all=False))
     count = len(view)
@@ -153,7 +153,7 @@ def export_dataset(args: argparse.Namespace) -> dict:
     summary = {
         "dataset": args.dataset,
         "label_field": args.label_field,
-        "tags": args.tags,
+        "tags": args.sample_tags,
         "exclude_tags": args.exclude_tags,
         "tag_matching": "union",
         "split": args.split,

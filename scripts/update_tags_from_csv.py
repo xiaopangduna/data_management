@@ -28,10 +28,10 @@ def tag_list(value: str) -> list[str]:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset-name", required=True, type=nonempty)
+    parser.add_argument("--dataset", required=True, type=nonempty)
     parser.add_argument("--csv-path", required=True, type=Path)
     parser.add_argument("--column", default="filename", help="CSV filename/path column")
-    parser.add_argument("--tags", required=True, type=tag_list, help="Comma-separated tags")
+    parser.add_argument("--sample-tags", required=True, type=tag_list, help="Comma-separated tags")
     parser.add_argument(
         "--allow-ambiguous",
         action="store_true",
@@ -109,19 +109,19 @@ def write_issues(dataset_name: str, issues: list[dict[str, str]]) -> Path:
 
 
 def run(args: argparse.Namespace, fo) -> int:
-    if not fo.dataset_exists(args.dataset_name):
-        raise ValueError(f"Dataset does not exist: {args.dataset_name}")
+    if not fo.dataset_exists(args.dataset):
+        raise ValueError(f"Dataset does not exist: {args.dataset}")
 
     csv_stems, csv_rows = read_csv_stems(args.csv_path, args.column)
-    dataset = fo.load_dataset(args.dataset_name)
+    dataset = fo.load_dataset(args.dataset)
     ids, filepaths, existing_tags = dataset.values(["id", "filepath", "tags"])
     updates, issues, matched_stems, matched_samples, unchanged = build_plan(
-        zip(ids, filepaths, existing_tags), csv_stems, args.tags, args.allow_ambiguous
+        zip(ids, filepaths, existing_tags), csv_stems, args.sample_tags, args.allow_ambiguous
     )
-    report = write_issues(args.dataset_name, issues)
+    report = write_issues(args.dataset, issues)
 
     print(f"mode={'dry-run' if args.dry_run else 'update'}")
-    print(f"dataset_name={args.dataset_name}")
+    print(f"dataset={args.dataset}")
     print(f"csv_rows={csv_rows}")
     print(f"unique_csv_stems={len(csv_stems)}")
     print(f"matched_stems={matched_stems}")
@@ -133,7 +133,7 @@ def run(args: argparse.Namespace, fo) -> int:
 
     if not args.dry_run:
         for sample in dataset.select(updates).iter_samples(autosave=True):
-            sample.tags = list(dict.fromkeys([*(sample.tags or []), *args.tags]))
+            sample.tags = list(dict.fromkeys([*(sample.tags or []), *args.sample_tags]))
         print(f"updated={len(updates)}")
     return 0
 

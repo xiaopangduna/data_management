@@ -56,7 +56,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Add hashes and image metadata to an existing FiftyOne dataset."
     )
     parser.add_argument(
-        "--dataset-name",
+        "--dataset",
         required=True,
         type=nonempty,
         help="Existing FiftyOne dataset name.",
@@ -297,7 +297,7 @@ def print_enrich_report(
         counts: Work counters.
     """
     print(f"mode={'dry-run' if dry_run else 'enrich'}")
-    print(f"dataset_name={dataset_name}")
+    print(f"dataset={dataset_name}")
     print(f"hashes={','.join(hash_types) if hash_types else 'none'}")
     print(f"metadata={compute_metadata}")
     print(f"overwrite={overwrite}")
@@ -323,7 +323,7 @@ def run_enrich(
         overwrite: Recompute existing values.
     """
     print(f"mode=enrich")
-    print(f"dataset_name={dataset.name}")
+    print(f"dataset={dataset.name}")
     print(f"samples={len(dataset)}")
     if compute_metadata:
         logger.info("Computing metadata overwrite=%s", overwrite)
@@ -355,16 +355,16 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as error:
         logger.error("%s", error)
         return 1
-    if not fo.dataset_exists(args.dataset_name):
-        logger.error("Dataset does not exist: %s", args.dataset_name)
+    if not fo.dataset_exists(args.dataset):
+        logger.error("Dataset does not exist: %s", args.dataset)
         return 1
-    dataset = fo.load_dataset(args.dataset_name)
+    dataset = fo.load_dataset(args.dataset)
     if args.dry_run:
         counts = count_enrichment_work(
             dataset, hash_types, args.metadata, args.overwrite
         )
         print_enrich_report(
-            args.dataset_name, hash_types, args.metadata, args.overwrite, True, counts
+            args.dataset, hash_types, args.metadata, args.overwrite, True, counts
         )
         return 0
     run_enrich(dataset, hash_types, args.metadata, args.overwrite)

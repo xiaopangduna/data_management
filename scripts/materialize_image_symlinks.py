@@ -58,7 +58,7 @@ def materialize(link: Path, destination: Path) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('directory', nargs='?', type=Path, default=DEFAULT_DIRECTORY)
-    parser.add_argument('--output-dir', required=True, type=Path, help='New output directory (must not exist)')
+    parser.add_argument('--out-dir', required=True, type=Path, help='New output directory (must not exist)')
     parser.add_argument('--dry-run', action='store_true', help='Preview without creating output')
     parser.add_argument('--limit', type=int, help='Process at most N files for a trial copy')
     args = parser.parse_args(argv)
@@ -67,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
     root = args.directory.expanduser().resolve(strict=True)
     if not root.is_dir():
         raise ValueError(f'Not a directory: {root}')
-    output = args.output_dir.expanduser()
+    output = args.out_dir.expanduser()
     if output.exists() or output.is_symlink():
         raise ValueError(f'Output already exists: {output}')
     output = output.resolve()

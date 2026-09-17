@@ -29,9 +29,9 @@ def tag_list(value: str) -> list[str]:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset-name", required=True, type=nonempty)
+    parser.add_argument("--dataset", required=True, type=nonempty)
     parser.add_argument("--images-dir", required=True, type=Path)
-    parser.add_argument("--tags", required=True, type=tag_list)
+    parser.add_argument("--sample-tags", required=True, type=tag_list)
     parser.add_argument("--recursive", action="store_true", help="Include subdirectories.")
     parser.add_argument("--dry-run", action="store_true", help="Write report without changing the database.")
     return parser.parse_args(argv)
@@ -95,17 +95,17 @@ def run(args: argparse.Namespace, fo) -> int:
     root = args.images_dir.expanduser().resolve(strict=True)
     if not root.is_dir():
         raise ValueError(f"Not a directory: {root}")
-    if not fo.dataset_exists(args.dataset_name):
-        raise ValueError(f"Dataset does not exist: {args.dataset_name}")
-    dataset = fo.load_dataset(args.dataset_name)
+    if not fo.dataset_exists(args.dataset):
+        raise ValueError(f"Dataset does not exist: {args.dataset}")
+    dataset = fo.load_dataset(args.dataset)
     if "sha256" not in dataset.get_field_schema():
         raise ValueError("Dataset has no sha256 field; run scripts/update_media.py first")
     images = list_images(root, args.recursive)
     ids, hashes, tags = dataset.values(["id", "sha256", "tags"])
-    updates, issues, matched = build_plan(zip(ids, hashes, tags), images, args.tags)
-    report = write_issues(args.dataset_name, issues)
+    updates, issues, matched = build_plan(zip(ids, hashes, tags), images, args.sample_tags)
+    report = write_issues(args.dataset, issues)
     print(f"mode={'dry-run' if args.dry_run else 'update'}")
-    print(f"dataset_name={args.dataset_name}")
+    print(f"dataset={args.dataset}")
     print(f"scanned_images={len(images)}")
     print(f"matched_samples={matched}")
     print(f"to_update={len(updates)}")
@@ -115,7 +115,7 @@ def run(args: argparse.Namespace, fo) -> int:
     if not args.dry_run:
         for sample_id in updates:
             sample = dataset[sample_id]
-            sample.tags = list(dict.fromkeys([*(sample.tags or []), *args.tags]))
+            sample.tags = list(dict.fromkeys([*(sample.tags or []), *args.sample_tags]))
             sample.save()
         print(f"updated={len(updates)}")
     return 0

@@ -152,7 +152,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Tag exact and near duplicates on an existing FiftyOne dataset."
     )
     parser.add_argument(
-        "--dataset-name",
+        "--dataset",
         required=True,
         type=nonempty,
         help="Existing FiftyOne dataset name.",
@@ -767,10 +767,10 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s [%(levelname)7s] %(name)s:%(lineno)d - %(message)s",
     )
     args = parse_args(argv)
-    if not fo.dataset_exists(args.dataset_name):
-        logger.error("Dataset does not exist: %s", args.dataset_name)
+    if not fo.dataset_exists(args.dataset):
+        logger.error("Dataset does not exist: %s", args.dataset)
         return 1
-    dataset = fo.load_dataset(args.dataset_name)
+    dataset = fo.load_dataset(args.dataset)
     run_dedup(dataset, args.hamming_max, args.dry_run)
     return 0
 

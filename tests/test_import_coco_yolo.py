@@ -29,7 +29,7 @@ def load_script(name: str):
 import_coco_yolo = load_script("import_coco_yolo.py")
 
 
-def test_parse_args_requires_coco_root_and_dataset_name():
+def test_parse_args_requires_coco_root_and_dataset():
     with pytest.raises(SystemExit):
         import_coco_yolo.parse_args([])
     with pytest.raises(SystemExit):
@@ -38,7 +38,7 @@ def test_parse_args_requires_coco_root_and_dataset_name():
 
 def test_parse_args_defaults():
     args = import_coco_yolo.parse_args(
-        ["--coco-root", "/tmp/coco", "--dataset-name", "coco2017"]
+        ["--coco-root", "/tmp/coco", "--dataset", "coco2017"]
     )
     assert args.replace is False
     assert args.dry_run is False

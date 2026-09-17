@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--coco-root", required=True, type=Path)
-    parser.add_argument("--dataset-name", required=True, type=nonempty)
+    parser.add_argument("--dataset", required=True, type=nonempty)
     parser.add_argument("--replace", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
@@ -34,7 +34,7 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError(f"Not a directory: {coco_root}")
         return run_coco(
             coco_root,
-            args.dataset_name,
+            args.dataset,
             args.dry_run,
             args.replace,
         )

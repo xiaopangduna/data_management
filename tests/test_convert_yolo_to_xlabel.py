@@ -20,8 +20,8 @@ def task(tmp_path, monkeypatch):
     (labels / "train").mkdir(parents=True)
     Image.new("RGB", (100, 50), "red").save(images / "train/a.jpg")
     (labels / "train/a.txt").write_text("1 0.5 0.5 0.4 0.4\n")
-    return ["--images-dir", str(images), "--labels-dir", str(labels),
-            "--out-dir", str(tmp_path / "output"), "--class-names", "person,baby_head"]
+    return ["--images-dir", str(images), "--label-dir", str(labels),
+            "--out-dir", str(tmp_path / "output"), "--classes", "person,baby_head"]
 
 
 @pytest.mark.parametrize("mode", ["none", "symlink", "copy"])

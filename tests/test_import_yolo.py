@@ -23,33 +23,33 @@ def load_script(name: str):
 import_yolo = load_script("import_yolo.py")
 
 
-def test_parse_args_requires_class_names_with_labels_dir():
+def test_parse_args_requires_classes_with_label_dir():
     with pytest.raises(SystemExit):
         import_yolo.parse_args(
             [
-                "--dataset-name",
+                "--dataset",
                 "demo",
                 "--images-dir",
                 "/tmp/images",
-                "--tags",
+                "--sample-tags",
                 "head,train",
-                "--labels-dir",
+                "--label-dir",
                 "/tmp/labels",
             ]
         )
 
 
-def test_parse_args_rejects_class_names_without_labels_dir():
+def test_parse_args_rejects_classes_without_label_dir():
     with pytest.raises(SystemExit):
         import_yolo.parse_args(
             [
-                "--dataset-name",
+                "--dataset",
                 "demo",
                 "--images-dir",
                 "/tmp/images",
-                "--tags",
+                "--sample-tags",
                 "head,train",
-                "--class-names",
+                "--classes",
                 "baby_head",
             ]
         )
@@ -58,16 +58,16 @@ def test_parse_args_rejects_class_names_without_labels_dir():
 def test_parse_args_images_only():
     args = import_yolo.parse_args(
         [
-            "--dataset-name",
+            "--dataset",
             "demo",
             "--images-dir",
             "/tmp/images",
-            "--tags",
+            "--sample-tags",
             "head,train,train",
         ]
     )
-    assert args.tags == ["head", "train"]
-    assert args.labels_dir is None
+    assert args.sample_tags == ["head", "train"]
+    assert args.label_dir is None
 
 
 def test_parse_yolo_txt_valid(tmp_path: Path):

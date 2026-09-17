@@ -21,12 +21,12 @@ def labels(*names):
 
 def test_cli_excludes_dup_repeat_drop_by_default():
     args = export.parse_args([
-        "--dataset", "demo", "--output-dir", "out", "--tags", "train",
+        "--dataset", "demo", "--out-dir", "out", "--sample-tags", "train",
     ])
     assert args.exclude_tags == ["dup_repeat_drop"]
     assert args.split == "train"
     args = export.parse_args([
-        "--dataset", "demo", "--output-dir", "out", "--tags", "train",
+        "--dataset", "demo", "--out-dir", "out", "--sample-tags", "train",
         "--exclude-tags", "dup_repeat_drop,dup_near",
         "--split", "train_v003",
     ])

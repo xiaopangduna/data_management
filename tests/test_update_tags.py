@@ -40,11 +40,11 @@ def test_scan_and_read_failure(tmp_path):
 
 
 def test_cli():
-    args = update.parse_args(["--dataset-name", "demo", "--images-dir", "/images", "--tags", " review,old,review, "])
-    assert args.tags == ["review", "old"]
+    args = update.parse_args(["--dataset", "demo", "--images-dir", "/images", "--sample-tags", " review,old,review, "])
+    assert args.sample_tags == ["review", "old"]
     assert not args.recursive and not args.dry_run
     with pytest.raises(SystemExit):
-        update.parse_args(["--dataset-name", "demo", "--images-dir", "/images", "--tags", " , "])
+        update.parse_args(["--dataset", "demo", "--images-dir", "/images", "--sample-tags", " , "])
 
 
 class Sample:
@@ -77,7 +77,7 @@ def test_dry_run_preservation_and_idempotence(tmp_path, monkeypatch, capsys):
     (tmp_path / "renamed.jpg").write_bytes(b"image")
     dataset = Dataset()
     fo = SimpleNamespace(dataset_exists=lambda name: True, load_dataset=lambda name: dataset)
-    args = update.parse_args(["--dataset-name", "demo", "--images-dir", str(tmp_path), "--tags", "review,old", "--dry-run"])
+    args = update.parse_args(["--dataset", "demo", "--images-dir", str(tmp_path), "--sample-tags", "review,old", "--dry-run"])
     assert update.run(args, fo) == 0
     assert dataset.sample.tags == ["old"] and dataset.sample.saves == 0
     assert (tmp_path / "tmp/update_tags_demo.csv").is_file()
@@ -91,7 +91,7 @@ def test_dry_run_preservation_and_idempotence(tmp_path, monkeypatch, capsys):
 
 
 def test_missing_dataset_or_hash_field(tmp_path):
-    args = update.parse_args(["--dataset-name", "demo", "--images-dir", str(tmp_path), "--tags", "review"])
+    args = update.parse_args(["--dataset", "demo", "--images-dir", str(tmp_path), "--sample-tags", "review"])
     fo = SimpleNamespace(dataset_exists=lambda name: False)
     with pytest.raises(ValueError, match="Dataset does not exist"):
         update.run(args, fo)

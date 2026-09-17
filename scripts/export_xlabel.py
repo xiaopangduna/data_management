@@ -91,7 +91,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Export images and X-AnyLabeling JSON into one folder."
     )
-    parser.add_argument("--dataset-name", required=True, type=nonempty)
+    parser.add_argument("--dataset", required=True, type=nonempty)
     parser.add_argument(
         "--out-dir",
         required=True,
@@ -411,10 +411,10 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s [%(levelname)7s] %(name)s:%(lineno)d - %(message)s",
     )
     args = parse_args(argv)
-    if not fo.dataset_exists(args.dataset_name):
-        logger.error("Dataset does not exist: %s", args.dataset_name)
+    if not fo.dataset_exists(args.dataset):
+        logger.error("Dataset does not exist: %s", args.dataset)
         return 1
-    dataset = fo.load_dataset(args.dataset_name)
+    dataset = fo.load_dataset(args.dataset)
     try:
         view = filtered_view(
             dataset, args.sample_tags, args.label_field, args.labels, args.exclude_tags

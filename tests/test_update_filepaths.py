@@ -17,9 +17,9 @@ def sha(data: bytes) -> str:
 
 def test_cli_is_dataset_images_dir_and_optional_dry_run():
     args = update.parse_args(
-        ["--dataset-name", "demo", "--images-dir", "/images", "--dry-run"]
+        ["--dataset", "demo", "--images-dir", "/images", "--dry-run"]
     )
-    assert args.dataset_name == "demo"
+    assert args.dataset == "demo"
     assert args.images_dir == Path("/images")
     assert args.dry_run
 
@@ -91,3 +91,27 @@ def test_multiple_samples_for_one_target_is_rejected(tmp_path: Path):
         "sample_hash_collision",
         "sample_hash_collision",
     ]
+
+
+def test_duplicate_hash_groups_lists_all_paths(tmp_path: Path):
+    first = tmp_path / "a.jpg"
+    second = tmp_path / "b.jpg"
+    unique = tmp_path / "c.jpg"
+    first.write_bytes(b"same")
+    second.write_bytes(b"same")
+    unique.write_bytes(b"other")
+    by_hash = update.hash_index(update.list_images(tmp_path))
+    groups = update.duplicate_hash_groups(by_hash)
+    assert groups == [(sha(b"same"), [str(first), str(second)])]
+
+
+def test_write_duplicates_csv(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    groups = [("abc", ["/tmp/a.jpg", "/tmp/b.jpg"])]
+    report = update.write_duplicates("demo", groups)
+    assert report == tmp_path / "tmp" / "update_filepaths_demo_duplicates.csv"
+    assert report.read_text(encoding="utf-8") == (
+        "sha256,count,path\n"
+        "abc,2,/tmp/a.jpg\n"
+        "abc,2,/tmp/b.jpg\n"
+    )

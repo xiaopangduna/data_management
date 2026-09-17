@@ -47,14 +47,14 @@ def planned(ref: dedup.SampleRef, plan: dedup.DedupPlan) -> dedup.SampleUpdate:
 
 
 def test_cli_tag_only_by_default():
-    args = dedup.parse_args(["--dataset-name", "demo"])
-    assert args.dataset_name == "demo"
+    args = dedup.parse_args(["--dataset", "demo"])
+    assert args.dataset == "demo"
     assert args.hamming_max == 2
     assert not args.dry_run
-    dry = dedup.parse_args(["--dataset-name", "demo", "--dry-run"])
+    dry = dedup.parse_args(["--dataset", "demo", "--dry-run"])
     assert dry.dry_run
     with pytest.raises(SystemExit):
-        dedup.parse_args(["--dataset-name", "demo", "--apply-deletes"])
+        dedup.parse_args(["--dataset", "demo", "--apply-deletes"])
 
 
 def test_new_exact_group_keep_drop_and_fields():

@@ -39,7 +39,7 @@ def nonempty(value: str) -> str:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset-name", required=True, type=nonempty)
+    parser.add_argument("--dataset", required=True, type=nonempty)
     parser.add_argument(
         "--images-dir",
         required=True,
@@ -77,6 +77,16 @@ def hash_index(images: list[Path]) -> dict[str, list[str]]:
             if index % LOG_INTERVAL == 0:
                 logger.info("Hashed images %d/%d", index, len(images))
     return by_hash
+
+
+def duplicate_hash_groups(by_hash: dict[str, list[str]]) -> list[tuple[str, list[str]]]:
+    groups = []
+    for digest, paths in by_hash.items():
+        unique = sorted(set(paths))
+        if len(unique) > 1:
+            groups.append((digest, unique))
+    groups.sort(key=lambda item: (item[0], item[1][0]))
+    return groups
 
 
 def build_plan(
@@ -149,6 +159,18 @@ def write_issues(dataset_name: str, rows: list[dict[str, str]]) -> Path:
     return output
 
 
+def write_duplicates(dataset_name: str, groups: list[tuple[str, list[str]]]) -> Path:
+    output = Path.cwd() / REPORT_SUBDIR / f"update_filepaths_{dataset_name}_duplicates.csv"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["sha256", "count", "path"])
+        writer.writeheader()
+        for digest, paths in groups:
+            for path in paths:
+                writer.writerow({"sha256": digest, "count": str(len(paths)), "path": path})
+    return output
+
+
 def apply_updates(dataset: fo.Dataset, updates: list[PathUpdate]) -> None:
     for index, item in enumerate(updates, 1):
         sample = dataset[item.sample_id]
@@ -166,8 +188,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parse_args(argv)
     try:
-        if not fo.dataset_exists(args.dataset_name):
-            raise ValueError(f"Dataset does not exist: {args.dataset_name}")
+        if not fo.dataset_exists(args.dataset):
+            raise ValueError(f"Dataset does not exist: {args.dataset}")
         images_dir = args.images_dir.expanduser().resolve(strict=True)
         if not images_dir.is_dir():
             raise ValueError(f"Not a directory: {images_dir}")
@@ -175,26 +197,33 @@ def main(argv: list[str] | None = None) -> int:
         images = list_images(images_dir)
         logger.info("Found %d images; computing SHA-256", len(images))
         by_hash = hash_index(images)
-        dataset = fo.load_dataset(args.dataset_name)
+        dataset = fo.load_dataset(args.dataset)
         ids, paths, hashes = dataset.values(["id", "filepath", "sha256"])
         rows = [
             (str(sample_id), str(filepath), str(digest) if digest else None)
             for sample_id, filepath, digest in zip(ids, paths, hashes)
         ]
         updates, issues, unchanged, ignored = build_plan(rows, by_hash)
-        report = write_issues(args.dataset_name, issues)
+        report = write_issues(args.dataset, issues)
+        dup_groups = duplicate_hash_groups(by_hash)
+        dup_files = sum(len(paths) for _, paths in dup_groups)
+        dup_report = write_duplicates(args.dataset, dup_groups)
 
         print(f"mode={'dry-run' if args.dry_run else 'update'}")
-        print(f"dataset_name={args.dataset_name}")
+        print(f"dataset={args.dataset}")
         print(f"images_dir={images_dir}")
         print(f"dataset_samples={len(rows)}")
         print(f"indexed_images={len(images)}")
         print(f"unique_hashes={len(by_hash)}")
+        print(f"duplicate_hashes={len(dup_groups)}")
+        print(f"duplicate_files={dup_files}")
+        print(f"duplicate_extra={dup_files - len(dup_groups)}")
         print(f"to_update={len(updates)}")
         print(f"unchanged={unchanged}")
         print(f"issues={len(issues)}")
         print(f"ignored_not_in_images_dir={ignored}")
         print(f"csv_path={report}")
+        print(f"duplicates_csv_path={dup_report}")
         if args.dry_run:
             return 0
         apply_updates(dataset, updates)

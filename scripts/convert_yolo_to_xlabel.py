@@ -26,9 +26,9 @@ def class_names(value: str) -> list[str]:
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("images-dir", "labels-dir", "out-dir"):
+    for name in ("images-dir", "label-dir", "out-dir"):
         parser.add_argument(f"--{name}", type=Path, required=True)
-    parser.add_argument("--class-names", type=class_names, required=True,
+    parser.add_argument("--classes", type=class_names, required=True,
                         help="Complete comma-separated class mapping, in YOLO ID order")
     parser.add_argument("--export-media", choices=("none", "symlink", "copy"), default="none")
     parser.add_argument("--overwrite", action="store_true", help="Replace existing output files")
@@ -57,7 +57,7 @@ def parse_shapes(label: Path, names: list[str], width: int, height: int) -> list
                 raise ValueError("expected class_id cx cy w h (detection boxes only)")
             class_id = int(tokens[0])
             if not 0 <= class_id < len(names):
-                raise ValueError("class ID outside --class-names mapping")
+                raise ValueError("class ID outside --classes mapping")
             cx, cy, bw, bh = map(float, tokens[1:])
             if not all(math.isfinite(v) for v in (cx, cy, bw, bh)):
                 raise ValueError("coordinates must be finite")
@@ -92,9 +92,9 @@ def atomic_output(destination: Path, writer):
 
 def convert(args) -> dict:
     images, labels, output = (getattr(args, name).expanduser().resolve()
-                              for name in ("images_dir", "labels_dir", "out_dir"))
+                              for name in ("images_dir", "label_dir", "out_dir"))
     if not images.is_dir() or not labels.is_dir():
-        raise ValueError("--images-dir and --labels-dir must be existing directories")
+        raise ValueError("--images-dir and --label-dir must be existing directories")
     for source in (images, labels):
         if output == source or source in output.parents or output in source.parents:
             raise ValueError("--out-dir must be separate from image and label trees")
@@ -145,7 +145,7 @@ def convert(args) -> dict:
             with Image.open(image) as opened:
                 width, height = opened.size
                 opened.verify()
-            shapes = parse_shapes(label, args.class_names, width, height)
+            shapes = parse_shapes(label, args.classes, width, height)
         except (OSError, ValueError, SyntaxError, Image.DecompressionBombError) as error:
             issue("invalid_input", key, error)
             continue

@@ -2,9 +2,9 @@
 
 Reads ``*.json`` under ``--label-dir``. Matches ``sample_id`` from the JSON
 (or ``description`` / ``fo_sample_id=``), falling back to absolute image paths
-with ``--images-dir`` when the ID is missing. Overwrites detections whose labels are in ``--class-names`` (drop old boxes
+with ``--images-dir`` when the ID is missing. Overwrites detections whose labels are in ``--classes`` (drop old boxes
 of those classes, then write JSON boxes). Other classes on the sample are
-kept. Empty JSON for those classes clears them. Adds ``--tags``. Does not
+kept. Empty JSON for those classes clears them. Adds ``--sample-tags``. Does not
 create or delete datasets, and does not change filepaths or hashes.
 """
 
@@ -107,7 +107,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Attach X-AnyLabeling JSON from a label folder onto FiftyOne."
     )
-    parser.add_argument("--dataset-name", required=True, type=nonempty)
+    parser.add_argument("--dataset", required=True, type=nonempty)
     parser.add_argument(
         "--label-dir",
         required=True,
@@ -120,7 +120,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Image root for path matching when sample_id is missing; mirrors label-dir subfolders.",
     )
     parser.add_argument(
-        "--class-names",
+        "--classes",
         required=True,
         type=class_names,
         help="Classes to replace from JSON; other detection labels on the sample are kept.",
@@ -132,7 +132,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=f"FiftyOne Detections field to update (default: {DEFAULT_LABEL_FIELD}).",
     )
     parser.add_argument(
-        "--tags",
+        "--sample-tags",
         required=True,
         type=sample_tags,
         help="Batch tag, e.g. label_person_260909. Changed samples also get tag changed.",
@@ -643,7 +643,7 @@ def apply_writes(
     names: set[str],
     label_field: str = DEFAULT_LABEL_FIELD,
 ) -> int:
-    """Replace --class-names boxes and add batch tags. Returns samples updated."""
+    """Replace --classes boxes and add batch tags. Returns samples updated."""
     if not to_write:
         return 0
     written = 0
@@ -739,15 +739,15 @@ def main(argv: list[str] | None = None) -> int:
     if images_dir is not None and not images_dir.is_dir():
         logger.error("Not a directory: %s", images_dir)
         return 1
-    if not fo.dataset_exists(args.dataset_name):
-        logger.error("Dataset does not exist: %s", args.dataset_name)
+    if not fo.dataset_exists(args.dataset):
+        logger.error("Dataset does not exist: %s", args.dataset)
         return 1
-    dataset = fo.load_dataset(args.dataset_name)
+    dataset = fo.load_dataset(args.dataset)
     return run_attach(
         dataset,
         label_dir,
-        args.class_names,
-        extra_tags=args.tags,
+        args.classes,
+        extra_tags=args.sample_tags,
         dry_run=args.dry_run,
         images_dir=images_dir,
         label_field=args.label_field,

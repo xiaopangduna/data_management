@@ -8,18 +8,25 @@ uv sync   # Python >= 3.12
 uv run fiftyone datasets list
 uv run fiftyone app launch <dataset>
 
+# 备份
 cd /tmp
 curl -fL -o mongodb-database-tools.deb \
   https://fastdl.mongodb.org/tools/db/mongodb-database-tools-ubuntu2404-x86_64-100.18.0.deb
 sudo apt install -y ./mongodb-database-tools.deb
 mongodump --version
 
+# 恢复
+启动数据库
+ .venv/lib/python3.12/site-packages/fiftyone/db/bin/mongod   --dbpath "$HOME/.fiftyone/var/lib/mongo"   --logpath "$HOME/.fiftyone/var/lib/mongo/log/mongo.log"   --port 27017   --nounixsocket   --fork
+恢复数据库
+mongorestore   --uri="mongodb://127.0.0.1:27017"   --gzip   --archive="$HOME/project/backup/fiftyone/fiftyone_20260916.archive.gz"
+
 .venv/lib/python3.12/site-packages/fiftyone/db/bin/mongod --dbpath /home/lee/huangwenhua/.fiftyone/mongo --port 27018 --fork --logpath /home/lee/huangwenhua/.fiftyone/mongod.log
 pgrep -af 'mongod.*27018'
 export FIFTYONE_DATABASE_URI=mongodb://127.0.0.1:27018
 # 备份
 STAMP=$(date +%Y%m%d)
-OUT=/mnt/nvme_data/backup/fiftyone/fiftyone_${STAMP}.archive.gz
+OUT=/home/huangwenhua/project/backup/fiftyone/fiftyone_${STAMP}.archive.gz
 mkdir -p /mnt/nvme_data/backup/fiftyone
 mongodump --uri="$FIFTYONE_DATABASE_URI" --db fiftyone --gzip --archive="$OUT"
 ls -lh "$OUT"
@@ -29,7 +36,13 @@ ls -lh "$OUT"
 #   --archive=/mnt/nvme_data/backup/fiftyone/fiftyone_20260910.archive.gz --drop
 
 ```
-
+# app用法
+查看交集标签
+打开 http://localhost:5151
+点顶部 + add stage
+选 MatchTags
+tags 填多个，例如 ["train", "big_face"]
+把 all 设为 True
 各脚本都支持 `--dry-run`：先看统计，确认后再去掉该参数正式写库。问题 CSV 在 `tmp/`。
 
 ## 流程
@@ -46,21 +59,21 @@ ls -lh "$OUT"
 
 ```bash
 uv run python scripts/import_yolo.py \
-  --dataset-name BBM08S_head \
+  --dataset BBM08S_head \
   --images-dir /path/to/images/train \
-  --labels-dir /path/to/labels/train \
-  --class-names baby_head,adult_head \
-  --tags head,train
+  --label-dir /path/to/labels/train \
+  --classes baby_head,adult_head \
+  --sample-tags head,train
 ```
 
-**仅图片**（无标注）：不传 `--labels-dir` / `--class-names`。
+**仅图片**（无标注）：不传 `--label-dir` / `--classes`。
 
 **YOLO 布局的 COCO**（`images/<split>/` + `labels/<split>/`，固定 COCO 80 类）：
 
 ```bash
 uv run python scripts/import_coco_yolo.py \
   --coco-root /path/to/coco \
-  --dataset-name coco2017
+  --dataset coco2017
 ```
 
 整库重导加 `--replace`。多个 YOLO split 各跑一次 `import_yolo.py`。
@@ -68,7 +81,7 @@ uv run python scripts/import_coco_yolo.py \
 ### Step 2：补哈希与尺寸
 
 ```bash
-uv run python scripts/update_media.py --dataset-name BBM08S_head
+uv run python scripts/update_media.py --dataset BBM08S_head
 ```
 
 写入 `sha256`、`phash`、`metadata`。不改路径、框、tags。增量跳过已有值。
@@ -80,8 +93,8 @@ uv run python scripts/update_media.py --dataset-name BBM08S_head
 完全重复（同 `sha256`）：全员 `dup_repeat`，当前保留张 `dup_repeat_keep`，建议删除 `dup_repeat_drop`。近似重复（pHash Hamming ≤ 2）：全员 `dup_near`（含当前保留张）。`dup_repeat_drop` 不参与近重复聚类。分组字段：`dup_group` / `dup_of`。
 
 ```bash
-uv run python scripts/dedup_fiftyone.py --dataset-name BBM08S_head --dry-run
-uv run python scripts/dedup_fiftyone.py --dataset-name BBM08S_head
+uv run python scripts/dedup_fiftyone.py --dataset BBM08S_head --dry-run
+uv run python scripts/dedup_fiftyone.py --dataset BBM08S_head
 ```
 
 App 里用 `dup_repeat` / `dup_repeat_drop` / `dup_near` 复核，按 `dup_group` 分组。CSV：`tmp/dedup_<数据集>*.csv`。导出默认排除 `dup_repeat_drop`。
@@ -92,7 +105,7 @@ App 里用 `dup_repeat` / `dup_repeat_drop` / `dup_near` 复核，按 `dup_group
 
 ```bash
 uv run python scripts/export_xlabel.py \
-  --dataset-name BBM08S_head \
+  --dataset BBM08S_head \
   --out-dir /path/to/relabel_task \
   --sample-tags relabel \
   --label-field ground_truth
@@ -104,27 +117,27 @@ uv run python scripts/export_xlabel.py \
 
 ### Step 5：写回标注
 
-只替换 `--class-names` 里的类；其它类不动。变更样本会打 `--tags` 和 `changed`。
+只替换 `--classes` 里的类；其它类不动。变更样本会打 `--sample-tags` 和 `changed`。
 
 ```bash
 uv run python scripts/update_xlabel_labels.py \
-  --dataset-name BBM08S_head \
+  --dataset BBM08S_head \
   --label-dir /path/to/relabel_task \
-  --class-names baby_head,adult_head \
-  --tags label_import_260911
+  --classes baby_head,adult_head \
+  --sample-tags label_import_260911
 ```
 
 无导出 `sample_id` 时加 `--images-dir` 按原图绝对路径匹配。已有库要补 YOLO txt：先 `convert_yolo_to_xlabel.py`，再走本脚本写回 `ground_truth`。
 
 ### Step 6：导出 YOLO 训练
 
-按 tag **并集**筛样本，写出一份目录。默认排除 `dup_repeat_drop`。`--output-dir` 可以已有其它 split；本次 `--split` 对应的 `images/<split>` 和 `labels/<split>` 须为空或不存在。`dataset.yaml` 会合并已有 split。
+按 tag **并集**筛样本，写出一份目录。默认排除 `dup_repeat_drop`。`--out-dir` 可以已有其它 split；本次 `--split` 对应的 `images/<split>` 和 `labels/<split>` 须为空或不存在。`dataset.yaml` 会合并已有 split。
 
 ```bash
 uv run python scripts/export_yolo.py \
   --dataset BBM08S_head \
-  --output-dir /path/to/BBM08S_head_yolo \
-  --tags train \
+  --out-dir /path/to/BBM08S_head_yolo \
+  --sample-tags train \
   --classes baby_head,adult_head
 ```
 
@@ -142,7 +155,7 @@ uv run python scripts/export_yolo.py \
   - 来源 / split：`head`、`train`、`val`、`test`、`train_bed` 等。导入时打上，导出 YOLO 按它们选图。
   - 工作队列：`relabel`、`review`。App 或 `update_tags.py` 打上，导出 X-AnyLabeling 按它们选图。
   - 整图去重：`dup_*`。只描述这张图要不要进训练/复核。
-  - 写回批次：`label_*`、`changed`、`xlabel_checked`。X-AnyLabeling 的 `checked` 按图；写回按 `--class-names` 整图替换那几类框；`changed` 表示这张图被这批 JSON 改过。
+  - 写回批次：`label_*`、`changed`、`xlabel_checked`。X-AnyLabeling 的 `checked` 按图；写回按 `--classes` 整图替换那几类框；`changed` 表示这张图被这批 JSON 改过。
 - 命名：无前缀来源 / split / 队列；`dup_*` 去重；`label_*` 写回批次。
 - **Label tags**（`detection.tags`）：只描述单个框，例如 `ignore`、`difficult`、`occluded`、`verified`、`needs_review`。现在不用。不要把 `train` / `relabel` / `dup_*` / `label_*` 复制到框上。YOLO txt 带不走 label tags。
 - 类别只写 `detection.label`，不要写进 sample tags 或 label tags。
@@ -196,9 +209,9 @@ uv run python scripts/extract_by_name.py \
 
 ```bash
 uv run python scripts/update_tags.py \
-  --dataset-name BBM08S_head \
+  --dataset BBM08S_head \
   --images-dir /path/to/selected_images \
-  --tags relabel,review \
+  --sample-tags relabel,review \
   --dry-run
 ```
 

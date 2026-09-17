@@ -47,17 +47,17 @@ __all__ = [
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset-name", required=True, type=nonempty)
+    parser.add_argument("--dataset", required=True, type=nonempty)
     parser.add_argument("--images-dir", required=True, type=Path)
-    parser.add_argument("--tags", required=True, type=tag_list)
-    parser.add_argument("--labels-dir", type=Path)
-    parser.add_argument("--class-names", type=class_names)
+    parser.add_argument("--sample-tags", required=True, type=tag_list)
+    parser.add_argument("--label-dir", type=Path)
+    parser.add_argument("--classes", type=class_names)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
-    if args.labels_dir is not None and not args.class_names:
-        parser.error("--class-names is required when --labels-dir is set")
-    if args.class_names and args.labels_dir is None:
-        parser.error("--class-names requires --labels-dir")
+    if args.label_dir is not None and not args.classes:
+        parser.error("--classes is required when --label-dir is set")
+    if args.classes and args.label_dir is None:
+        parser.error("--classes requires --label-dir")
     return args
 
 
@@ -69,12 +69,12 @@ def main(argv: list[str] | None = None) -> int:
         if not images_dir.is_dir():
             raise ValueError(f"Not a directory: {images_dir}")
         labels_dir = None
-        if args.labels_dir is not None:
-            labels_dir = args.labels_dir.expanduser().resolve(strict=True)
+        if args.label_dir is not None:
+            labels_dir = args.label_dir.expanduser().resolve(strict=True)
             if not labels_dir.is_dir():
                 raise ValueError(f"Not a directory: {labels_dir}")
         return run_leaf(
-            args.dataset_name, images_dir, args.tags, labels_dir, args.class_names, args.dry_run
+            args.dataset, images_dir, args.sample_tags, labels_dir, args.classes, args.dry_run
         )
     except KeyboardInterrupt:
         logger.error("Interrupted")

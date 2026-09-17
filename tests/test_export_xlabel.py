@@ -16,7 +16,7 @@ spec.loader.exec_module(export)
 
 
 def test_cli_defaults_and_removed_options():
-    base = ["--dataset-name", "test", "--out-dir", "out", "--sample-tags", "test,review"]
+    base = ["--dataset", "test", "--out-dir", "out", "--sample-tags", "test,review"]
     args = export.parse_args(base)
     assert args.sample_tags == ["test", "review"]
     assert args.exclude_tags == ["dup_repeat_drop"]

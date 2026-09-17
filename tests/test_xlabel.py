@@ -163,8 +163,8 @@ def test_converted_media_modes_attach_to_original_image(tmp_path, monkeypatch):
     for mode in ("none", "symlink", "copy"):
         output = tmp_path / mode
         assert converter.main([
-            "--images-dir", str(images), "--labels-dir", str(labels),
-            "--class-names", "person", "--out-dir", str(output), "--export-media", mode,
+            "--images-dir", str(images), "--label-dir", str(labels),
+            "--classes", "person", "--out-dir", str(output), "--export-media", mode,
         ]) == 0
         plan = attach.build_attach_plan(PathDataset([str(original)]), output, ["person"], images)
         assert not plan.issues
@@ -191,12 +191,12 @@ def test_path_queries_are_batched_and_duplicate_json_rejected(tmp_path, monkeypa
 
 def test_label_field_defaults_and_can_be_selected():
     default_args = attach.parse_args([
-        "--dataset-name", "dataset", "--label-dir", ".",
-        "--class-names", "person", "--tags", "batch",
+        "--dataset", "dataset", "--label-dir", ".",
+        "--classes", "person", "--sample-tags", "batch",
     ])
     custom_args = attach.parse_args([
-        "--dataset-name", "dataset", "--label-dir", ".",
-        "--class-names", "person", "--tags", "batch",
+        "--dataset", "dataset", "--label-dir", ".",
+        "--classes", "person", "--sample-tags", "batch",
         "--label-field", "ground_truth_detect",
     ])
     assert default_args.label_field == "ground_truth"
