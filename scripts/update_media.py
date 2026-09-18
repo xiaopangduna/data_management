@@ -225,7 +225,7 @@ def enrich_sample_hashes(
     file_path: Path,
     hash_types: list[str],
     overwrite: bool,
-) -> list[str]:
+) -> tuple[list[str], int]:
     """Write hash fields onto one sample.
 
     Args:
@@ -235,24 +235,37 @@ def enrich_sample_hashes(
         overwrite: Recompute existing values.
 
     Returns:
-        Names of fields written.
+        Names of fields written, and count of hash failures on this sample.
     """
     written: list[str] = []
+    failures = 0
     if "sha256" in hash_types and (overwrite or not sample_field_is_filled(sample, SHA256_FIELD)):
-        sample[SHA256_FIELD] = compute_sha256_hex(file_path)
-        written.append(SHA256_FIELD)
+        try:
+            sample[SHA256_FIELD] = compute_sha256_hex(file_path)
+            written.append(SHA256_FIELD)
+        except OSError as error:
+            failures += 1
+            logger.warning(
+                "sha256 failed sample=%s path=%s: %s", sample.id, file_path, error
+            )
     if "phash" in hash_types and (overwrite or not phash_is_current(sample)):
-        sample[PHASH_FIELD] = compute_phash_hex(file_path)
-        sample[PHASH_ALGORITHM_FIELD] = PHASH_ALGORITHM
-        written.append(PHASH_FIELD)
-    return written
+        try:
+            sample[PHASH_FIELD] = compute_phash_hex(file_path)
+            sample[PHASH_ALGORITHM_FIELD] = PHASH_ALGORITHM
+            written.append(PHASH_FIELD)
+        except (OSError, ValueError, SyntaxError, Image.DecompressionBombError) as error:
+            failures += 1
+            logger.warning(
+                "phash failed sample=%s path=%s: %s", sample.id, file_path, error
+            )
+    return written, failures
 
 
 def enrich_dataset(
     dataset: fo.Dataset,
     hash_types: list[str],
     overwrite: bool,
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     """Compute hashes for samples that need them.
 
     Args:
@@ -261,21 +274,24 @@ def enrich_dataset(
         overwrite: Recompute existing values.
 
     Returns:
-        Tuple of (updated_sample_count, missing_file_count).
+        Tuple of (updated_sample_count, missing_file_count, hash_failure_count).
     """
     updated_count = 0
     missing_count = 0
+    failure_count = 0
     for sample_index, sample in enumerate(dataset.iter_samples(autosave=True), start=1):
         file_path = Path(sample.filepath)
         if not file_path.is_file():
             missing_count += 1
             logger.warning("Missing file: %s", file_path)
             continue
-        if enrich_sample_hashes(sample, file_path, hash_types, overwrite):
+        written, failures = enrich_sample_hashes(sample, file_path, hash_types, overwrite)
+        failure_count += failures
+        if written:
             updated_count += 1
         if sample_index % LOG_INTERVAL == 0:
             logger.info("Hashed %s/%s samples", sample_index, len(dataset))
-    return updated_count, missing_count
+    return updated_count, missing_count, failure_count
 
 
 def print_enrich_report(
@@ -329,9 +345,12 @@ def run_enrich(
         logger.info("Computing metadata overwrite=%s", overwrite)
         dataset.compute_metadata(overwrite=overwrite, skip_failures=True)
     if hash_types:
-        updated_count, missing_count = enrich_dataset(dataset, hash_types, overwrite)
+        updated_count, missing_count, failure_count = enrich_dataset(
+            dataset, hash_types, overwrite
+        )
         print(f"hash_samples_updated={updated_count}")
         print(f"hash_missing_files={missing_count}")
+        print(f"hash_failures={failure_count}")
     dataset.save()
     print("enrich_done=true")
 

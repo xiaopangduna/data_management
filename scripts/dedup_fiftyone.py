@@ -1,7 +1,8 @@
 """Tag exact and near duplicates on an existing FiftyOne dataset.
 
 Exact matches share ``sha256``. Every member gets ``dup_repeat``; one sample
-gets ``dup_repeat_keep`` and the rest ``dup_repeat_drop``. Near matches share
+gets ``dup_repeat_keep`` and the rest ``dup_repeat_drop``. Exact keepers
+prefer samples with detections (and an on-disk image). Near matches share
 a 64-bit pHash within ``--hamming-max`` (default 0 = identical pHash): every
 member gets ``dup_near``, one ``dup_near_keep``, the rest ``dup_near_drop``.
 Near keepers prefer samples with an on-disk image and non-empty detections.
@@ -271,19 +272,18 @@ def collect_sample_refs(dataset: fo.Dataset) -> list[SampleRef]:
     return refs
 
 
-def keep_sort_key(ref: SampleRef) -> tuple[str, int, str]:
-    """Sort key so the first item is the sample to keep (exact groups)."""
-    path = ref.relpath or ref.filepath
-    return (path, -ref.area, ref.id)
-
-
-def near_keep_sort_key(ref: SampleRef) -> tuple[int, int, int, int, int, str, str]:
-    """Prefer on-disk image with boxes, then more boxes, then larger area."""
+def keep_sort_key(ref: SampleRef) -> tuple[int, int, int, int, int, str, str]:
+    """Prefer on-disk image with boxes, then more boxes, then larger area, then path."""
     has_both = 1 if ref.file_exists and ref.box_count > 0 else 0
     has_boxes = 1 if ref.box_count > 0 else 0
     has_file = 1 if ref.file_exists else 0
     path = ref.relpath or ref.filepath
     return (-has_both, -has_boxes, -has_file, -ref.box_count, -ref.area, path, ref.id)
+
+
+def near_keep_sort_key(ref: SampleRef) -> tuple[int, int, int, int, int, str, str]:
+    """Prefer on-disk image with boxes, then more boxes, then larger area."""
+    return keep_sort_key(ref)
 
 
 def group_refs_by_key(refs: list[SampleRef], key_name: str) -> dict[str, list[SampleRef]]:

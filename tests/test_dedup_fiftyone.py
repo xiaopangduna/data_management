@@ -80,6 +80,28 @@ def test_new_exact_group_keep_drop_and_fields():
     assert unique.id not in plan.updates
 
 
+def test_exact_keeper_prefers_boxes_over_path():
+    no_boxes = make_ref(
+        "a",
+        relpath="a.jpg",
+        filepath="/data/a.jpg",
+        sha256="abc",
+        box_count=0,
+    )
+    with_boxes = make_ref(
+        "b",
+        relpath="z.jpg",
+        filepath="/data/z.jpg",
+        sha256="abc",
+        box_count=2,
+    )
+    plan = dedup.build_dedup_plan([no_boxes, with_boxes], hamming_max=0)
+    assert plan.drop_ids == ["a"]
+    assert planned(with_boxes, plan).tags == ("dup_repeat", "dup_repeat_keep")
+    assert planned(no_boxes, plan).tags == ("dup_repeat", "dup_repeat_drop")
+    assert planned(no_boxes, plan).dup_of == "/data/z.jpg"
+
+
 def test_near_includes_all_members_and_excludes_exact_drops():
     keep = make_ref("a", relpath="a.jpg", filepath="/data/a.jpg", sha256="aaa", phash="00")
     drop = make_ref("b", relpath="b.jpg", filepath="/data/b.jpg", sha256="aaa", phash="00")

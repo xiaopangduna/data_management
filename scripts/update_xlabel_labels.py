@@ -1,23 +1,26 @@
 """Attach X-AnyLabeling sidecar JSON onto an existing FiftyOne dataset.
 
-Reads ``*.json`` under ``--label-dir``. Matches ``sample_id`` from the JSON
-(or ``description`` / ``fo_sample_id=``), falling back to absolute image paths
-with ``--images-dir`` when the ID is missing. Overwrites detections whose labels are in ``--classes`` (drop old boxes
-of those classes, then write JSON boxes). Other classes on the sample are
-kept. Empty JSON for those classes clears them. Adds ``--sample-tags``. Does not
-create or delete datasets, and does not change filepaths or hashes.
+Reads images and ``*.json`` under ``--task-dir``. Matches samples by
+``sample_id`` (or ``description`` / ``fo_sample_id=``), falling back to the
+associated image's SHA-256. Overwrites detections whose labels are in
+``--classes`` (drop old boxes of those classes, then write JSON boxes). Other
+classes on the sample are kept. Empty JSON for those classes clears them.
+Adds ``--sample-tags``. Does not create or delete datasets, and does not
+change filepaths or hashes.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import logging
 import os
 import sys
 import time
 import warnings
+from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -42,13 +45,22 @@ XLABEL_CHECKED_TAG = "xlabel_checked"
 CHANGED_TAG = "changed"
 QUERY_BATCH_SIZE = 1000
 PIXEL_TOL = 2
+SHA256_CHUNK_SIZE = 1024 * 1024
 SKIP_JSON_NAMES = frozenset({"manifest.json"})
 SUPPORTED_SHAPES = frozenset({"rectangle", "polygon"})
+IMAGE_SUFFIXES = frozenset(
+    {".bmp", ".gif", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
+)
+MISSING_SHA256_MSG = (
+    "Dataset missing sha256; run scripts/update_media.py --hashes sha256 first"
+)
 ISSUE_COLUMNS = (
     "issue",
     "sample_id",
     "relpath",
     "label_relpath",
+    "image_path",
+    "sha256",
     "detail",
 )
 
@@ -64,6 +76,7 @@ class ParsedBoxes:
     width: int
     height: int
     image_path: str = ""
+    image_sha256: str = ""
 
 
 @dataclass
@@ -105,19 +118,14 @@ def sample_tags(value: str) -> list[str]:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse CLI arguments for attaching X-AnyLabeling JSON."""
     parser = argparse.ArgumentParser(
-        description="Attach X-AnyLabeling JSON from a label folder onto FiftyOne."
+        description="Attach X-AnyLabeling JSON from a task folder onto FiftyOne."
     )
     parser.add_argument("--dataset", required=True, type=nonempty)
     parser.add_argument(
-        "--label-dir",
+        "--task-dir",
         required=True,
         type=Path,
-        help="Directory of sidecar JSON (e.g. tmp/images/val2017). Walks subfolders.",
-    )
-    parser.add_argument(
-        "--images-dir",
-        type=Path,
-        help="Image root for path matching when sample_id is missing; mirrors label-dir subfolders.",
+        help="Task directory with paired images and sidecar JSON. Walks subfolders.",
     )
     parser.add_argument(
         "--classes",
@@ -150,6 +158,8 @@ def issue_row(
     sample_id: str = "",
     relpath: str = "",
     label_relpath: str = "",
+    image_path: str = "",
+    sha256: str = "",
     detail: str = "",
 ) -> dict[str, str]:
     """Build one issue CSV row."""
@@ -158,24 +168,94 @@ def issue_row(
         "sample_id": sample_id,
         "relpath": relpath,
         "label_relpath": label_relpath,
+        "image_path": image_path,
+        "sha256": sha256,
         "detail": detail,
     }
 
 
-def iter_json_paths(label_dir: Path) -> list[Path]:
-    """List sidecar JSON files; do not follow directory symlinks."""
-    paths: list[Path] = []
-    for directory, dir_names, filenames in os.walk(label_dir, followlinks=False):
+def normalize_hash(value: object) -> str:
+    """Return a stripped lowercase digest, or empty if missing."""
+    if value is None:
+        return ""
+    return str(value).strip().lower()
+
+
+def compute_sha256_hex(file_path: Path) -> str:
+    """Hash file bytes with SHA-256 (lowercase hex)."""
+    digest = hashlib.sha256()
+    with file_path.open("rb") as handle:
+        while True:
+            chunk = handle.read(SHA256_CHUNK_SIZE)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def scan_task_dir(task_dir: Path) -> tuple[list[Path], list[Path]]:
+    """List sidecar JSON and image files; do not follow directory symlinks."""
+    json_paths: list[Path] = []
+    image_paths: list[Path] = []
+    for directory, dir_names, filenames in os.walk(task_dir, followlinks=False):
         dir_names.sort()
         for filename in filenames:
             path = Path(directory) / filename
-            if path.suffix.lower() != ".json":
-                continue
-            if filename.lower() in SKIP_JSON_NAMES:
-                continue
-            paths.append(path)
-    paths.sort()
-    return paths
+            suffix = path.suffix.lower()
+            if suffix == ".json":
+                if filename.lower() in SKIP_JSON_NAMES:
+                    continue
+                json_paths.append(path)
+            elif suffix in IMAGE_SUFFIXES:
+                image_paths.append(path)
+    json_paths.sort()
+    image_paths.sort()
+    return json_paths, image_paths
+
+
+def path_inside(path: Path, root: Path) -> bool:
+    """True when ``path`` is lexically under ``root`` (symlink targets may escape)."""
+    abs_path = Path(os.path.abspath(path))
+    abs_root = Path(os.path.abspath(root))
+    try:
+        abs_path.relative_to(abs_root)
+    except ValueError:
+        return False
+    return True
+
+
+def resolve_task_image(
+    json_path: Path,
+    task_dir: Path,
+    image_path_field: str,
+    images_by_name: dict[str, list[Path]],
+) -> Path | None:
+    """Locate the image for one JSON inside ``task_dir`` only."""
+    field = image_path_field.strip()
+    if field:
+        raw = Path(field)
+        if raw.is_absolute():
+            name = raw.name
+            local = json_path.parent / name
+            if local.is_file() and path_inside(local, task_dir):
+                return local
+            matches = [
+                path for path in images_by_name.get(name.lower(), []) if path_inside(path, task_dir)
+            ]
+            if len(matches) == 1:
+                return matches[0]
+            return None
+        candidate = Path(os.path.abspath(json_path.parent / raw))
+        if not path_inside(candidate, task_dir):
+            return None
+        if candidate.is_file() and candidate.suffix.lower() in IMAGE_SUFFIXES:
+            return candidate
+        return None
+    for suffix in sorted(IMAGE_SUFFIXES):
+        candidate = json_path.with_suffix(suffix)
+        if candidate.is_file() and path_inside(candidate, task_dir):
+            return candidate
+    return None
 
 
 def parse_fo_sample_id(data: dict) -> str:
@@ -241,32 +321,46 @@ def pixel_box_to_fo(
 
 def parse_xlabel_file(
     json_path: Path,
-    label_dir: Path,
+    task_dir: Path,
     names: set[str],
-) -> tuple[ParsedBoxes | None, list[dict[str, str]]]:
-    """Parse one JSON. Returns boxes or None when the file must not be applied."""
-    label_relpath = json_path.relative_to(label_dir).as_posix()
+) -> tuple[ParsedBoxes | None, list[dict[str, str]], str]:
+    """Parse one JSON. Returns boxes, issues, and raw imagePath field."""
+    label_relpath = json_path.relative_to(task_dir).as_posix()
     issues: list[dict[str, str]] = []
     try:
         data = json.loads(json_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         issues.append(issue_row("parse_error", label_relpath=label_relpath, detail=str(error)))
-        return None, issues
+        return None, issues, ""
     if not isinstance(data, dict):
         issues.append(issue_row("parse_error", label_relpath=label_relpath, detail="not an object"))
-        return None, issues
+        return None, issues, ""
     sample_id = parse_fo_sample_id(data)
+    image_path_field = str(data.get("imagePath") or "").strip()
     size = image_size_from_json(data)
     if size is None:
-        issues.append(issue_row("missing_size", sample_id=sample_id, label_relpath=label_relpath))
-        return None, issues
+        issues.append(
+            issue_row(
+                "missing_size",
+                sample_id=sample_id,
+                label_relpath=label_relpath,
+            )
+        )
+        return None, issues, image_path_field
     width, height = size
     shapes = data.get("shapes")
     if shapes is None:
         shapes = []
     if not isinstance(shapes, list):
-        issues.append(issue_row("parse_error", sample_id=sample_id, label_relpath=label_relpath, detail="shapes"))
-        return None, issues
+        issues.append(
+            issue_row(
+                "parse_error",
+                sample_id=sample_id,
+                label_relpath=label_relpath,
+                detail="shapes",
+            )
+        )
+        return None, issues, image_path_field
     boxes: list[tuple[str, tuple[float, float, float, float]]] = []
     for index, shape in enumerate(shapes):
         if not isinstance(shape, dict):
@@ -317,7 +411,7 @@ def parse_xlabel_file(
             continue
         boxes.append((label, fo_box))
     if issues:
-        return None, issues
+        return None, issues, image_path_field
     boxes.sort(key=lambda item: (item[0], item[1]))
     checked = bool(data.get("checked"))
     return (
@@ -328,9 +422,9 @@ def parse_xlabel_file(
             checked=checked,
             width=width,
             height=height,
-            image_path=str(data.get("imagePath") or "").strip(),
         ),
         issues,
+        image_path_field,
     )
 
 
@@ -371,10 +465,14 @@ def load_existing_boxes(
         return {sample_id: None for sample_id in sample_ids}
     existing = {}
     for offset in range(0, len(sample_ids), QUERY_BATCH_SIZE):
-        view = dataset.select(sample_ids[offset:offset + QUERY_BATCH_SIZE])
+        view = dataset.select(sample_ids[offset : offset + QUERY_BATCH_SIZE])
         ids, values = view.values(["id", label_field])
         existing.update({str(sid): existing_box_tuples(value) for sid, value in zip(ids, values)})
-        logger.info("Read existing boxes %d/%d", min(offset + QUERY_BATCH_SIZE, len(sample_ids)), len(sample_ids))
+        logger.info(
+            "Read existing boxes %d/%d",
+            min(offset + QUERY_BATCH_SIZE, len(sample_ids)),
+            len(sample_ids),
+        )
     return existing
 
 
@@ -457,98 +555,170 @@ def boxes_equal(
     )
 
 
+def build_dataset_indexes(
+    dataset: fo.Dataset,
+) -> tuple[dict[str, str], dict[str, list[str]]]:
+    """Load sample id and sha256 indexes in one pass."""
+    if "sha256" not in dataset.get_field_schema():
+        raise ValueError(MISSING_SHA256_MSG)
+    ids, hashes = dataset.values(["id", "sha256"])
+    by_id = {str(sample_id): str(sample_id) for sample_id in ids}
+    by_sha256: dict[str, list[str]] = defaultdict(list)
+    for sample_id, digest in zip(ids, hashes):
+        normalized = normalize_hash(digest)
+        if not normalized:
+            continue
+        by_sha256[normalized].append(str(sample_id))
+    return by_id, by_sha256
+
+
+def match_parsed_sample(
+    parsed: ParsedBoxes,
+    by_id: dict[str, str],
+    by_sha256: dict[str, list[str]],
+) -> tuple[str | None, dict[str, str] | None]:
+    """Resolve one parsed JSON to a dataset sample_id, or an issue row."""
+    claimed = parsed.sample_id.strip()
+    if claimed and ObjectId.is_valid(claimed):
+        if claimed in by_id:
+            return claimed, None
+        return None, issue_row(
+            "orphan_sample_id",
+            sample_id=claimed,
+            label_relpath=parsed.label_relpath,
+            image_path=parsed.image_path,
+            sha256=parsed.image_sha256,
+        )
+    digest = parsed.image_sha256
+    if not digest:
+        return None, issue_row(
+            "missing_sample_id_and_hash",
+            sample_id=claimed,
+            label_relpath=parsed.label_relpath,
+            image_path=parsed.image_path,
+        )
+    candidates = by_sha256.get(digest, [])
+    if not candidates:
+        return None, issue_row(
+            "orphan_sha256",
+            sample_id=claimed,
+            label_relpath=parsed.label_relpath,
+            image_path=parsed.image_path,
+            sha256=digest,
+        )
+    if len(candidates) > 1:
+        return None, issue_row(
+            "ambiguous_sha256",
+            sample_id=claimed,
+            label_relpath=parsed.label_relpath,
+            image_path=parsed.image_path,
+            sha256=digest,
+            detail=",".join(candidates),
+        )
+    return candidates[0], None
+
+
 def build_attach_plan(
     dataset: fo.Dataset,
-    label_dir: Path,
+    task_dir: Path,
     names: list[str],
-    images_dir: Path | None = None,
     label_field: str = DEFAULT_LABEL_FIELD,
 ) -> AttachPlan:
     """Match JSON files to samples and decide writes vs issue rows."""
     plan = AttachPlan()
     allowed = set(names)
-    json_paths = iter_json_paths(label_dir)
+    by_id, by_sha256 = build_dataset_indexes(dataset)
+    json_paths, image_paths = scan_task_dir(task_dir)
     plan.label_files = len(json_paths)
+    images_by_name: dict[str, list[Path]] = defaultdict(list)
+    for path in image_paths:
+        images_by_name[path.name.lower()].append(path)
     started = time.monotonic()
-    logger.info("Found %d JSON files; parsing labels", len(json_paths))
-    parsed_files = []
-    requested_ids = set()
-    requested_paths = set()
-    paths_by_label = {}
+    logger.info("Found %d JSON files and %d images; parsing labels", len(json_paths), len(image_paths))
+
+    parsed_files: list[ParsedBoxes] = []
+    hash_cache: dict[Path, str] = {}
     for index, json_path in enumerate(json_paths, 1):
-        parsed, parse_issues = parse_xlabel_file(json_path, label_dir, allowed)
+        parsed, parse_issues, image_path_field = parse_xlabel_file(json_path, task_dir, allowed)
         plan.issues.extend(parse_issues)
-        if parsed is not None:
-            parsed_files.append(parsed)
-            if parsed.sample_id:
-                if ObjectId.is_valid(parsed.sample_id):
-                    requested_ids.add(parsed.sample_id)
-            elif images_dir is not None and parsed.image_path:
-                path = Path(parsed.image_path).expanduser()
-                if path.is_absolute():
-                    paths = [path, images_dir / path.name]
-                else:
-                    path = images_dir / Path(parsed.label_relpath).parent / path
-                    paths = [path]
-                # Query only this batch's lexical and canonical paths, never resolve the entire dataset.
-                candidates = {
-                    candidate
-                    for path in paths
-                    for candidate in (os.path.abspath(path), str(path.resolve()))
-                }
-                paths_by_label[parsed.label_relpath] = candidates
-                requested_paths.update(candidates)
-        if index % QUERY_BATCH_SIZE == 0:
-            logger.info("Parsed JSON %d/%d", index, len(json_paths))
-    logger.info("Parsed labels in %.2fs; querying %d IDs and %d paths",
-                time.monotonic() - started, len(requested_ids), len(requested_paths))
-    dataset_ids = set()
-    path_ids: dict[str, set[str]] = {}
-    ids = sorted(requested_ids)
-    for offset in range(0, len(ids), QUERY_BATCH_SIZE):
-        found = dataset.select(ids[offset:offset + QUERY_BATCH_SIZE]).values("id")
-        dataset_ids.update(str(sid) for sid in found)
-        logger.info("Queried IDs %d/%d", min(offset + QUERY_BATCH_SIZE, len(ids)), len(ids))
-    paths = sorted(requested_paths)
-    for offset in range(0, len(paths), QUERY_BATCH_SIZE):
-        view = dataset.match({"filepath": {"$in": paths[offset:offset + QUERY_BATCH_SIZE]}})
-        found_ids, found_paths = view.values(["id", "filepath"])
-        for sid, filepath in zip(found_ids, found_paths):
-            sid = str(sid)
-            path_ids.setdefault(filepath, set()).add(sid)
-            dataset_ids.add(sid)
-        logger.info("Queried paths %d/%d", min(offset + QUERY_BATCH_SIZE, len(paths)), len(paths))
-    pending: list[ParsedBoxes] = []
-    matched_ids: list[str] = []
-    seen_ids: dict[str, str] = {}
-    for parsed in parsed_files:
-        if not parsed.sample_id and images_dir is not None:
-            if not parsed.image_path:
-                plan.issues.append(issue_row("missing_image_path", label_relpath=parsed.label_relpath))
-                continue
-            paths = paths_by_label[parsed.label_relpath]
-            candidates = set().union(*(path_ids.get(path, set()) for path in paths))
-            if len(candidates) != 1:
-                plan.issues.append(issue_row(
-                    "orphan_image_path" if not candidates else "ambiguous_image_path",
-                    label_relpath=parsed.label_relpath,
-                    detail=", ".join(sorted(paths)),
-                ))
-                continue
-            parsed = replace(parsed, sample_id=next(iter(candidates)))
-        if not parsed.sample_id:
-            plan.issues.append(
-                issue_row("missing_sample_id", label_relpath=parsed.label_relpath)
-            )
+        if parsed is None:
             continue
-        if parsed.sample_id not in dataset_ids:
+        image = resolve_task_image(json_path, task_dir, image_path_field, images_by_name)
+        if image is None:
             plan.issues.append(
                 issue_row(
-                    "orphan_label",
+                    "missing_image",
                     sample_id=parsed.sample_id,
                     label_relpath=parsed.label_relpath,
+                    detail=image_path_field or json_path.stem,
                 )
             )
+            continue
+        image_relpath = image.relative_to(task_dir).as_posix()
+        try:
+            if image not in hash_cache:
+                hash_cache[image] = compute_sha256_hex(image)
+            digest = hash_cache[image]
+        except OSError as error:
+            plan.issues.append(
+                issue_row(
+                    "missing_sample_id_and_hash",
+                    sample_id=parsed.sample_id,
+                    label_relpath=parsed.label_relpath,
+                    image_path=image_relpath,
+                    detail=str(error),
+                )
+            )
+            continue
+        parsed_files.append(
+            replace(parsed, image_path=image_relpath, image_sha256=digest)
+        )
+        if index % QUERY_BATCH_SIZE == 0:
+            logger.info("Parsed JSON %d/%d", index, len(json_paths))
+
+    task_hash_groups: dict[str, list[ParsedBoxes]] = defaultdict(list)
+    for parsed in parsed_files:
+        task_hash_groups[parsed.image_sha256].append(parsed)
+
+    matched_candidates: list[ParsedBoxes] = []
+    for parsed in parsed_files:
+        sample_id, issue = match_parsed_sample(parsed, by_id, by_sha256)
+        if issue is not None:
+            plan.issues.append(issue)
+            continue
+        assert sample_id is not None
+        matched_candidates.append(replace(parsed, sample_id=sample_id))
+
+    skip_labels: set[str] = set()
+    for digest, group in task_hash_groups.items():
+        if len(group) <= 1:
+            continue
+        matched_ids = {
+            item.sample_id
+            for item in matched_candidates
+            if item.image_sha256 == digest
+        }
+        detail = f"images={len(group)} matched_sample_ids={','.join(sorted(matched_ids)) or 'none'}"
+        for item in group:
+            plan.issues.append(
+                issue_row(
+                    "duplicate_task_image_hash",
+                    sample_id=item.sample_id,
+                    label_relpath=item.label_relpath,
+                    image_path=item.image_path,
+                    sha256=digest,
+                    detail=detail,
+                )
+            )
+        if len(matched_ids) > 1:
+            for item in group:
+                skip_labels.add(item.label_relpath)
+
+    pending: list[ParsedBoxes] = []
+    matched_ids_list: list[str] = []
+    seen_ids: dict[str, str] = {}
+    for parsed in matched_candidates:
+        if parsed.label_relpath in skip_labels:
             continue
         if parsed.sample_id in seen_ids:
             plan.issues.append(
@@ -556,16 +726,19 @@ def build_attach_plan(
                     "sample_id_collision",
                     sample_id=parsed.sample_id,
                     label_relpath=parsed.label_relpath,
+                    image_path=parsed.image_path,
+                    sha256=parsed.image_sha256,
                     detail=f"already matched {seen_ids[parsed.sample_id]}",
                 )
             )
             continue
         seen_ids[parsed.sample_id] = parsed.label_relpath
         plan.matched += 1
-        matched_ids.append(parsed.sample_id)
+        matched_ids_list.append(parsed.sample_id)
         pending.append(parsed)
+
     logger.info("Matched %d samples; loading existing boxes", plan.matched)
-    existing = load_existing_boxes(dataset, matched_ids, label_field)
+    existing = load_existing_boxes(dataset, matched_ids_list, label_field)
     for parsed in pending:
         current = existing.get(parsed.sample_id)
         new_boxes = parsed.boxes
@@ -574,8 +747,13 @@ def build_attach_plan(
             plan.to_tag[parsed.sample_id] = parsed
             continue
         plan.to_write[parsed.sample_id] = parsed
-    logger.info("Plan finished in %.2fs: changed=%d unchanged=%d issues=%d",
-                time.monotonic() - started, len(plan.to_write), plan.unchanged, len(plan.issues))
+    logger.info(
+        "Plan finished in %.2fs: changed=%d unchanged=%d issues=%d",
+        time.monotonic() - started,
+        len(plan.to_write),
+        plan.unchanged,
+        len(plan.issues),
+    )
     return plan
 
 
@@ -590,7 +768,13 @@ def write_issue_csv(path: Path, rows: list[dict[str, str]]) -> None:
     """Write the issue CSV, including a header when there are no issues."""
     rows = sorted(
         rows,
-        key=lambda row: (row["issue"], row["label_relpath"], row["relpath"], row["sample_id"]),
+        key=lambda row: (
+            row["issue"],
+            row["label_relpath"],
+            row["image_path"],
+            row["relpath"],
+            row["sample_id"],
+        ),
     )
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(ISSUE_COLUMNS))
@@ -685,15 +869,14 @@ def print_report(values: dict[str, object]) -> None:
 
 def run_attach(
     dataset: fo.Dataset,
-    label_dir: Path,
+    task_dir: Path,
     names: list[str],
     extra_tags: list[str],
     dry_run: bool,
-    images_dir: Path | None = None,
     label_field: str = DEFAULT_LABEL_FIELD,
 ) -> int:
     """Plan, write the issue CSV, and optionally apply detections."""
-    plan = build_attach_plan(dataset, label_dir, names, images_dir, label_field)
+    plan = build_attach_plan(dataset, task_dir, names, label_field)
     csv_path = issue_csv_path(dataset.name)
     write_issue_csv(csv_path, plan.issues)
     logger.info("Wrote issue CSV %s rows=%s", csv_path, len(plan.issues))
@@ -701,7 +884,7 @@ def run_attach(
         {
             "mode": "dry-run" if dry_run else "attach",
             "dataset_name": dataset.name,
-            "label_dir": str(label_dir),
+            "task_dir": str(task_dir),
             "class_names": ",".join(names),
             "label_field": label_field,
             "tags": ",".join(extra_tags),
@@ -731,27 +914,26 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s [%(levelname)7s] %(name)s:%(lineno)d - %(message)s",
     )
     args = parse_args(argv)
-    label_dir = args.label_dir.expanduser().resolve()
-    if not label_dir.is_dir():
-        logger.error("Not a directory: %s", label_dir)
-        return 1
-    images_dir = args.images_dir.expanduser().resolve() if args.images_dir else None
-    if images_dir is not None and not images_dir.is_dir():
-        logger.error("Not a directory: %s", images_dir)
+    task_dir = args.task_dir.expanduser().resolve()
+    if not task_dir.is_dir():
+        logger.error("Not a directory: %s", task_dir)
         return 1
     if not fo.dataset_exists(args.dataset):
         logger.error("Dataset does not exist: %s", args.dataset)
         return 1
     dataset = fo.load_dataset(args.dataset)
-    return run_attach(
-        dataset,
-        label_dir,
-        args.classes,
-        extra_tags=args.sample_tags,
-        dry_run=args.dry_run,
-        images_dir=images_dir,
-        label_field=args.label_field,
-    )
+    try:
+        return run_attach(
+            dataset,
+            task_dir,
+            args.classes,
+            extra_tags=args.sample_tags,
+            dry_run=args.dry_run,
+            label_field=args.label_field,
+        )
+    except ValueError as error:
+        logger.error("%s", error)
+        return 1
 
 
 if __name__ == "__main__":

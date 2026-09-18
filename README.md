@@ -17,7 +17,7 @@ mongodump --version
 
 # 恢复
 启动数据库
- .venv/lib/python3.12/site-packages/fiftyone/db/bin/mongod   --dbpath "$HOME/.fiftyone/var/lib/mongo"   --logpath "$HOME/.fiftyone/var/lib/mongo/log/mongo.log"   --port 27017   --nounixsocket   --fork
+.venv/lib/python3.12/site-packages/fiftyone/db/bin/mongod   --dbpath "$HOME/.fiftyone/var/lib/mongo"   --logpath "$HOME/.fiftyone/var/lib/mongo/log/mongo.log"   --port 27017   --nounixsocket   --fork
 恢复数据库
 mongorestore   --uri="mongodb://127.0.0.1:27017"   --gzip   --archive="$HOME/project/backup/fiftyone/fiftyone_20260916.archive.gz"
 
@@ -27,7 +27,7 @@ export FIFTYONE_DATABASE_URI=mongodb://127.0.0.1:27018
 # 备份
 STAMP=$(date +%Y%m%d)
 OUT=/home/huangwenhua/project/backup/fiftyone/fiftyone_${STAMP}.archive.gz
-mkdir -p /mnt/nvme_data/backup/fiftyone
+mkdir -p /home/huangwenhua/project/backup/fiftyone/
 mongodump --uri="$FIFTYONE_DATABASE_URI" --db fiftyone --gzip --archive="$OUT"
 ls -lh "$OUT"
 
@@ -90,7 +90,7 @@ uv run python scripts/update_media.py --dataset BBM08S_head
 
 不删磁盘文件。默认只打标；加 `--apply-deletes` 才从 FiftyOne 库删掉 drop 样本。
 
-完全重复（同 `sha256`）：全员 `dup_repeat`，保留张 `dup_repeat_keep`，其余 `dup_repeat_drop`。近重复（默认同 pHash，Hamming ≤ `--hamming-max`，默认 0）：全员 `dup_near`，保留张 `dup_near_keep`（优先有图有框），其余 `dup_near_drop`。`dup_repeat_drop` 不参与近重复聚类。分组字段：`dup_group` / `dup_of`。进一步近重可把 `--hamming-max` 调到 2 再复核。
+完全重复（同 `sha256`）：全员 `dup_repeat`，保留张 `dup_repeat_keep`（优先有图有框，其次框多、面积大、路径），其余 `dup_repeat_drop`。近重复（默认同 pHash，Hamming ≤ `--hamming-max`，默认 0）：全员 `dup_near`，保留张 `dup_near_keep`（同样优先有图有框），其余 `dup_near_drop`。`dup_repeat_drop` 不参与近重复聚类。分组字段：`dup_group` / `dup_of`。进一步近重可把 `--hamming-max` 调到 2 再复核。
 
 ```bash
 uv run python scripts/dedup_fiftyone.py --dataset BBM08S_head --dry-run
@@ -120,17 +120,18 @@ uv run python scripts/export_xlabel.py \
 
 ### Step 5：写回标注
 
-只替换 `--classes` 里的类；其它类不动。变更样本会打 `--sample-tags` 和 `changed`。
+只替换 `--classes` 里的类；其它类不动。变更样本会打 `--sample-tags` 和 `changed`。从同一任务目录读图片和 JSON，按 `sample_id` 匹配；没有有效 ID 时再按任务图片 SHA-256 匹配。不使用 filepath / 文件名 / phash。库须先有 `sha256` 字段（`update_media.py`）。
 
 ```bash
 uv run python scripts/update_xlabel_labels.py \
   --dataset BBM08S_head \
-  --label-dir /path/to/relabel_task \
+  --task-dir /path/to/relabel_task \
   --classes baby_head,adult_head \
-  --sample-tags label_import_260911
+  --sample-tags label_import_260911 \
+  --dry-run
 ```
 
-无导出 `sample_id` 时加 `--images-dir` 按原图绝对路径匹配。已有库要补 YOLO txt：先 `convert_yolo_to_xlabel.py`，再走本脚本写回 `ground_truth`。
+已有库要补 YOLO txt：先 `convert_yolo_to_xlabel.py` 得到任务目录，再走本脚本写回 `ground_truth`（无 `sample_id` 时依赖图片内容哈希）。
 
 ### Step 6：导出 YOLO 训练
 
@@ -142,6 +143,16 @@ uv run python scripts/export_yolo.py \
   --out-dir /path/to/BBM08S_head_yolo \
   --sample-tags train \
   --classes baby_head,adult_head
+#导出v001数据集
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v001_baby_head --split train --sample-tags train --classes baby_head
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v001_baby_head --split test --sample-tags test --classes baby_head
+#导出v002数据集
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v002_baby_head_adult_head/ --split test --sample-tags test --classes baby_head,adult_head
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v002_baby_head_adult_head/ --split train --sample-tags train_v002 --classes baby_head,adult_head
+#导出v003数据集
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v003_baby_head/ --split train --sample-tags train_v003 --classes baby_head 
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v003_baby_head/ --split test --sample-tags test --classes baby_head 
+
 ```
 
 默认软链原图。无框图保留为空 txt。`--label-field` 默认 `ground_truth`。`--split` 控制 `images/<split>` 和 `labels/<split>` 目录名，默认 `train`。
@@ -165,13 +176,14 @@ uv run python scripts/export_yolo.py \
 - 结构化值用字段：`filepath`、`relpath`、`sha256`、`phash`、`dup_group`、`dup_of`、`metadata`。
 - App 用来看图、筛数据、打工作流 tag，不在里面画框。工作流 tag 打在 sample 上；只有要标记单个框时才用 label tag。
 
-脚本按动词前缀：`import_` 入库，`update_` 改已有库，`export_` 导出，`convert_` 只转文件，`dedup_` 去重，`extract_` 按文件名抽磁盘文件。
+脚本按动词前缀：`import_` 入库，`update_` 改已有库，`export_` 导出，`convert_` 只转文件，`dedup_` 去重，`extract_` 按文件名抽磁盘文件，`check_` 只读预检。
 
 ```
 scripts/
   import_yolo.py / import_coco_yolo.py
   update_media.py / update_xlabel_labels.py
   dedup_fiftyone.py
+  check_folder_dupes.py
   export_xlabel.py / export_yolo.py
   convert_yolo_to_xlabel.py
   extract_by_name.py
@@ -189,6 +201,32 @@ uv run python scripts/rename_images_by_hash.py /path/to/images
 ```
 
 需要处理各级子目录时增加 `--recursive`。扩展名会转为小写；相同内容、相同扩展名的重复图片以 `-2`、`-3` 保留。脚本不会修改标注文件或 FiftyOne 中已有的文件路径，因此应在入库前运行。
+
+## 导入前对照库查重（文件夹门禁）
+
+任何新图先过文件夹门禁，再决定是否入库。步骤：验图（截断/解码失败 → `corrupt`）→ 批次内同 sha256 → `batch_dup` → 对照库 `exact_dup` / `near_dup` → 其余进 `new/`。默认输出打平并用 `{sha256}{ext}` 命名。不改库。先保证库上跑过 `update_media.py`。
+
+```bash
+uv run python scripts/check_folder_dupes.py \
+  --dataset BBM08S_head \
+  --images-dir /path/to/candidates \
+  --out-dir /path/to/staging \
+  --recursive \
+  --dry-run
+```
+
+去掉 `--dry-run` 后落到 `--out-dir`：
+
+```text
+staging/
+  new/         # 可直接 import_yolo --images-dir .../new（hash 文件名）
+  exact_dup/   # 与库内容完全重复
+  near_dup/    # 仅 phash 命中，人工复核
+  batch_dup/   # 候选目录内同内容的第 2+ 份
+  corrupt/     # 截断/损坏图
+```
+
+默认 `copy`、全 status 落盘、按 hash 命名；`--materialize new` 只写 `new/`；`--no-rename-by-hash` 保留原文件名；`--hashes sha256` 只做精确重复。CSV：`tmp/check_folder_dupes_<数据集>.csv`。建议流程：门禁 → 只导入 `new/` → `update_media` → 必要时整库 `dedup_fiftyone`。
 
 ## 按文件名抽取
 
