@@ -19,7 +19,7 @@ def test_cli_defaults_and_removed_options():
     base = ["--dataset", "test", "--out-dir", "out", "--sample-tags", "test,review"]
     args = export.parse_args(base)
     assert args.sample_tags == ["test", "review"]
-    assert args.exclude_tags == ["dup_repeat_drop"]
+    assert args.exclude_tags == ["dup_repeat_drop", "dup_near_drop"]
     assert args.label_field == "ground_truth"
     assert args.labels is None and args.export_labels is None
     for option in ("--include-tags", "--exclude-sample-tags", "--class-names"):

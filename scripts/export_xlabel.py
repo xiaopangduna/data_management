@@ -59,6 +59,7 @@ class ExportItem:
     width: int
     height: int
     shapes: list[dict]
+    sha256: str = ""
 
 
 @dataclass
@@ -110,9 +111,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--exclude-tags",
-        default=["dup_repeat_drop"],
+        default=["dup_repeat_drop", "dup_near_drop"],
         type=class_names,
-        help="Exclude samples with ANY of these tags. Default: dup_repeat_drop.",
+        help="Exclude samples with ANY of these tags. Default: dup_repeat_drop,dup_near_drop.",
     )
     parser.add_argument(
         "--label-field", default=DETECT_FIELD, type=nonempty,
@@ -242,18 +243,20 @@ def filtered_view(
 def build_xlabel_document(item: ExportItem) -> dict:
     """Return one XLABEL JSON object, including fo_sample_id for round-trip."""
     image_name = Path(item.relpath).name
-    return {
+    document = {
         "version": XLABEL_VERSION,
         "flags": {},
         "shapes": item.shapes,
         "description": f"{SAMPLE_ID_PREFIX}{item.sample_id}",
         "checked": False,
         "sample_id": item.sample_id,
+        "sha256": item.sha256,
         "imagePath": image_name,
         "imageData": None,
         "imageHeight": item.height,
         "imageWidth": item.width,
     }
+    return document
 
 
 def collect_export_plan(
@@ -277,6 +280,10 @@ def collect_export_plan(
         metadata_list = view.values("metadata")
     else:
         metadata_list = [None] * len(ids)
+    if view.has_field("sha256"):
+        sha256_list = view.values("sha256")
+    else:
+        sha256_list = [None] * len(ids)
     seen_relpath: dict[str, str] = {}
     for index, sample_id in enumerate(ids):
         relpath = normalize_text(relpaths[index])
@@ -318,6 +325,7 @@ def collect_export_plan(
                 width=width,
                 height=height,
                 shapes=shapes,
+                sha256=normalize_text(sha256_list[index]).lower(),
             )
         )
     return plan

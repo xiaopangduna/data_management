@@ -88,16 +88,19 @@ uv run python scripts/update_media.py --dataset BBM08S_head
 
 ### Step 3：去重
 
-不删磁盘文件。默认只打标，不从库里删样本。
+不删磁盘文件。默认只打标；加 `--apply-deletes` 才从 FiftyOne 库删掉 drop 样本。
 
-完全重复（同 `sha256`）：全员 `dup_repeat`，当前保留张 `dup_repeat_keep`，建议删除 `dup_repeat_drop`。近似重复（pHash Hamming ≤ 2）：全员 `dup_near`（含当前保留张）。`dup_repeat_drop` 不参与近重复聚类。分组字段：`dup_group` / `dup_of`。
+完全重复（同 `sha256`）：全员 `dup_repeat`，保留张 `dup_repeat_keep`，其余 `dup_repeat_drop`。近重复（默认同 pHash，Hamming ≤ `--hamming-max`，默认 0）：全员 `dup_near`，保留张 `dup_near_keep`（优先有图有框），其余 `dup_near_drop`。`dup_repeat_drop` 不参与近重复聚类。分组字段：`dup_group` / `dup_of`。进一步近重可把 `--hamming-max` 调到 2 再复核。
 
 ```bash
 uv run python scripts/dedup_fiftyone.py --dataset BBM08S_head --dry-run
 uv run python scripts/dedup_fiftyone.py --dataset BBM08S_head
+uv run python scripts/dedup_fiftyone.py --dataset BBM08S_head --apply-deletes
+# 可选：近似近重
+# uv run python scripts/dedup_fiftyone.py --dataset BBM08S_head --hamming-max 2 --dry-run
 ```
 
-App 里用 `dup_repeat` / `dup_repeat_drop` / `dup_near` 复核，按 `dup_group` 分组。CSV：`tmp/dedup_<数据集>*.csv`。导出默认排除 `dup_repeat_drop`。
+App 里用 `dup_repeat_drop` / `dup_near_drop` 复核，按 `dup_group` 分组。CSV：`tmp/dedup_<数据集>*.csv`。导出默认排除 `dup_repeat_drop`、`dup_near_drop`。
 
 ### Step 4：导出给 X-AnyLabeling
 

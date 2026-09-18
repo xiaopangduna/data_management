@@ -41,8 +41,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Folder name under images/ and labels/. Default: train.")
     parser.add_argument("--sample-tags", required=True, type=names,
                         help="Comma-separated sample tags; match ANY tag (union).")
-    parser.add_argument("--exclude-tags", type=names, default=["dup_repeat_drop"],
-                        help="Exclude samples with ANY of these tags. Default: dup_repeat_drop.")
+    parser.add_argument("--exclude-tags", type=names, default=["dup_repeat_drop", "dup_near_drop"],
+                        help="Exclude samples with ANY of these tags. Default: dup_repeat_drop,dup_near_drop.")
     parser.add_argument("--classes", type=names,
                         help="Classes to export in class ID order; otherwise all classes sorted from selected samples.")
     parser.add_argument("--export-media", choices=("symlink", "copy"), default="symlink")

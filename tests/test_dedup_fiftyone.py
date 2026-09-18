@@ -21,6 +21,8 @@ def make_ref(
     sha256: str = "",
     phash: str = "",
     area: int = 100,
+    box_count: int = 0,
+    file_exists: bool = True,
     tags: tuple[str, ...] = (),
     dup_group: str = "",
     dup_of: str = "",
@@ -33,6 +35,8 @@ def make_ref(
         sha256=sha256,
         phash=phash,
         area=area,
+        box_count=box_count,
+        file_exists=file_exists,
         tags=tags,
         dup_group=dup_group,
         dup_of=dup_of,
@@ -46,15 +50,16 @@ def planned(ref: dedup.SampleRef, plan: dedup.DedupPlan) -> dedup.SampleUpdate:
     )
 
 
-def test_cli_tag_only_by_default():
+def test_cli_defaults_and_apply_deletes():
     args = dedup.parse_args(["--dataset", "demo"])
     assert args.dataset == "demo"
-    assert args.hamming_max == 2
+    assert args.hamming_max == 0
     assert not args.dry_run
+    assert not args.apply_deletes
     dry = dedup.parse_args(["--dataset", "demo", "--dry-run"])
     assert dry.dry_run
-    with pytest.raises(SystemExit):
-        dedup.parse_args(["--dataset", "demo", "--apply-deletes"])
+    deletes = dedup.parse_args(["--dataset", "demo", "--apply-deletes"])
+    assert deletes.apply_deletes
 
 
 def test_new_exact_group_keep_drop_and_fields():
@@ -89,10 +94,58 @@ def test_near_includes_all_members_and_excludes_exact_drops():
     drop_update = planned(drop, plan)
     assert "dup_near" in keep_update.tags and "dup_repeat_keep" in keep_update.tags
     assert keep_update.tags[:2] == ("dup_repeat", "dup_repeat_keep")
-    assert near_update.tags == ("dup_near",)
+    assert "dup_near" in near_update.tags
+    assert "dup_near_keep" in near_update.tags or "dup_near_drop" in near_update.tags
     assert "dup_near" not in drop_update.tags
     assert keep_update.dup_group == "exact:aaa"
     assert near_update.dup_group.startswith("near:")
+
+
+def test_identical_phash_default_assigns_near_keep_drop():
+    with_boxes = make_ref(
+        "a",
+        relpath="b.jpg",
+        filepath="/data/b.jpg",
+        sha256="aaa",
+        phash="abcd",
+        box_count=2,
+        file_exists=True,
+    )
+    no_boxes = make_ref(
+        "b",
+        relpath="a.jpg",
+        filepath="/data/a.jpg",
+        sha256="bbb",
+        phash="abcd",
+        box_count=0,
+        file_exists=True,
+    )
+    plan = dedup.build_dedup_plan([with_boxes, no_boxes], hamming_max=0)
+    assert list(plan.near_groups) == ["abcd"]
+    assert plan.near_keep == 1 and plan.near_drop == 1
+    assert planned(with_boxes, plan).tags == ("dup_near", "dup_near_keep")
+    assert planned(no_boxes, plan).tags == ("dup_near", "dup_near_drop")
+    assert planned(no_boxes, plan).dup_of == "/data/b.jpg"
+    assert plan.near_drop_ids == ["b"]
+
+
+def test_near_keeper_prefers_image_with_boxes():
+    missing_file = make_ref(
+        "a",
+        relpath="a.jpg",
+        phash="ff",
+        box_count=5,
+        file_exists=False,
+    )
+    with_both = make_ref(
+        "b",
+        relpath="z.jpg",
+        phash="ff",
+        box_count=1,
+        file_exists=True,
+    )
+    keeper = dedup.pick_near_keeper([missing_file, with_both])
+    assert keeper.id == "b"
 
 
 def test_re_run_preserves_human_keep_drop_swap():
@@ -167,7 +220,7 @@ def test_stale_dup_tags_cleared_when_group_dissolves():
         "a",
         relpath="a.jpg",
         sha256="solo",
-        tags=("train", "dup_repeat", "dup_repeat_keep", "dup_near"),
+        tags=("train", "dup_repeat", "dup_repeat_keep", "dup_near", "dup_near_keep"),
         dup_group="exact:old",
         dup_of="/old.jpg",
     )
@@ -189,8 +242,61 @@ def test_report_uses_drop_action_and_prefixed_groups():
     assert {row["action"] for row in exact_rows} == {"keep", "drop"}
     assert all(row["dup_group"] == "exact:abc" for row in exact_rows)
     assert "delete" not in {row["action"] for row in rows}
-    assert {row["action"] for row in near_rows} == {"keep", "tag_dup_near"}
+    assert {row["action"] for row in near_rows} == {"keep", "drop"}
     assert all(row["dup_group"].startswith("near:") for row in near_rows)
+
+
+def test_planned_delete_skips_keep_tagged_samples():
+    exact_drop = make_ref(
+        "a",
+        sha256="aaa",
+        tags=("dup_repeat", "dup_repeat_drop"),
+    )
+    exact_keep = make_ref(
+        "b",
+        sha256="aaa",
+        tags=("dup_repeat", "dup_repeat_keep"),
+    )
+    near_keep = make_ref(
+        "c",
+        sha256="ccc",
+        phash="11",
+        box_count=1,
+        tags=(),
+    )
+    near_drop = make_ref(
+        "d",
+        sha256="ddd",
+        phash="11",
+        box_count=0,
+        tags=(),
+    )
+    # exact keep that is also a near drop should not be deleted
+    exact_keep_near = make_ref(
+        "e",
+        sha256="eee",
+        phash="22",
+        box_count=0,
+        tags=(),
+    )
+    labeled = make_ref(
+        "f",
+        sha256="fff",
+        phash="22",
+        box_count=2,
+        tags=(),
+    )
+    plan = dedup.build_dedup_plan(
+        [exact_drop, exact_keep, near_keep, near_drop, exact_keep_near, labeled],
+        hamming_max=0,
+    )
+    delete_ids = set(dedup.planned_delete_ids(plan))
+    assert "a" in delete_ids
+    assert "d" in delete_ids
+    assert "e" in delete_ids
+    assert "b" not in delete_ids
+    assert "c" not in delete_ids
+    assert "f" not in delete_ids
 
 
 def test_compose_tags_preserves_workflow_tags():
