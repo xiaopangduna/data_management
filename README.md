@@ -21,15 +21,15 @@ mongodump --version
 恢复数据库
 mongorestore   --uri="mongodb://127.0.0.1:27017"   --gzip   --archive="$HOME/project/backup/fiftyone/fiftyone_20260916.archive.gz"
 
-.venv/lib/python3.12/site-packages/fiftyone/db/bin/mongod --dbpath /home/lee/huangwenhua/.fiftyone/mongo --port 27018 --fork --logpath /home/lee/huangwenhua/.fiftyone/mongod.log
-pgrep -af 'mongod.*27018'
-export FIFTYONE_DATABASE_URI=mongodb://127.0.0.1:27018
+# 查看mongod是否运行
+pgrep -a mongod
+
+.venv/lib/python3.12/site-packages/fiftyone/db/bin/mongod --dbpath /home/lee/huangwenhua/.fiftyone/mongo --port 27017 --fork --logpath /home/lee/huangwenhua/.fiftyone/mongod.log
+pgrep -af 'mongod.*27017'
+export FIFTYONE_DATABASE_URI=mongodb://127.0.0.1:27017
 # 备份
-STAMP=$(date +%Y%m%d)
-OUT=/home/huangwenhua/project/backup/fiftyone/fiftyone_${STAMP}.archive.gz
 mkdir -p /home/huangwenhua/project/backup/fiftyone/
-mongodump --uri="$FIFTYONE_DATABASE_URI" --db fiftyone --gzip --archive="$OUT"
-ls -lh "$OUT"
+mongodump --uri="$FIFTYONE_DATABASE_URI" --db=fiftyone --gzip --archive="/home/huangwenhua/project/backup/fiftyone/fiftyone_$(date +%Y%m%d).archive.gz"
 
 # 恢复（会覆盖当前库）
 # mongorestore --uri="$FIFTYONE_DATABASE_URI" --gzip \
@@ -183,7 +183,7 @@ scripts/
   import_yolo.py / import_coco_yolo.py
   update_media.py / update_xlabel_labels.py
   dedup_fiftyone.py
-  check_folder_dupes.py
+  check_image_dupes.py
   export_xlabel.py / export_yolo.py
   convert_yolo_to_xlabel.py
   extract_by_name.py
@@ -202,16 +202,22 @@ uv run python scripts/rename_images_by_hash.py /path/to/images
 
 需要处理各级子目录时增加 `--recursive`。扩展名会转为小写；相同内容、相同扩展名的重复图片以 `-2`、`-3` 保留。脚本不会修改标注文件或 FiftyOne 中已有的文件路径，因此应在入库前运行。
 
-## 导入前对照库查重（文件夹门禁）
+## 导入前图片门禁
 
-任何新图先过文件夹门禁，再决定是否入库。步骤：验图（截断/解码失败 → `corrupt`）→ 批次内同 sha256 → `batch_dup` → 对照库 `exact_dup` / `near_dup` → 其余进 `new/`。默认输出打平并用 `{sha256}{ext}` 命名。不改库。先保证库上跑过 `update_media.py`。
+任何新图可先过图片门禁。不传 `--dataset` 时只检查文件夹自身：损坏 → `corrupt`，内容重复第 2+ 份 → `batch_dup`，其余 → `new`。传入 `--dataset` 时再对照库做 `exact_dup` / `near_dup`。默认递归、输出打平 `{sha256}{ext}`、只 copy。对库模式需先 `update_media.py`。
 
 ```bash
-uv run python scripts/check_folder_dupes.py \
+# 仅检查文件夹（不连库）
+uv run python scripts/check_image_dupes.py \
+  --images-dir /path/to/candidates \
+  --out-dir /path/to/staging \
+  --dry-run
+
+# 对照 FiftyOne 库
+uv run python scripts/check_image_dupes.py \
   --dataset BBM08S_head \
   --images-dir /path/to/candidates \
   --out-dir /path/to/staging \
-  --recursive \
   --dry-run
 ```
 
@@ -226,7 +232,7 @@ staging/
   corrupt/     # 截断/损坏图
 ```
 
-默认 `copy`、全 status 落盘、按 hash 命名；`--materialize new` 只写 `new/`；`--no-rename-by-hash` 保留原文件名；`--hashes sha256` 只做精确重复。CSV：`tmp/check_folder_dupes_<数据集>.csv`。建议流程：门禁 → 只导入 `new/` → `update_media` → 必要时整库 `dedup_fiftyone`。
+默认递归扫描；`--no-recursive` 只扫当前层。可用 `--suffixes .jpg,.png` 收窄扩展名；`--no-rename-by-hash` 保留原文件名。CSV：有库时 `tmp/check_image_dupes_<数据集>.csv`，无库时 `tmp/check_image_dupes_folder.csv`。建议流程：可先无库自检 → 再对库门禁 → 只导入 `new/` → `update_media` → 必要时整库 `dedup_fiftyone`。
 
 ## 按文件名抽取
 

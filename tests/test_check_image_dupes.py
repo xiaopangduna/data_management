@@ -7,7 +7,7 @@ import pytest
 from PIL import Image
 
 spec = importlib.util.spec_from_file_location(
-    "check_folder_dupes", Path(__file__).parents[1] / "scripts/check_folder_dupes.py"
+    "check_image_dupes", Path(__file__).parents[1] / "scripts/check_image_dupes.py"
 )
 check = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(check)
@@ -47,11 +47,49 @@ def test_cli_defaults():
     assert args.dataset == "demo"
     assert args.images_dir == Path("/images")
     assert args.out_dir == Path("/out")
-    assert args.export_media == "copy"
     assert args.rename_by_hash is True
-    assert args.materialize == "all"
-    assert args.hashes == ["sha256", "phash"]
-    assert not args.recursive and not args.dry_run
+    assert args.suffixes == check.IMAGE_SUFFIXES
+    assert args.recursive is True
+    assert not args.dry_run
+    folder_only = check.parse_args(["--images-dir", "/images", "--out-dir", "/out"])
+    assert folder_only.dataset is None
+    base = ["--dataset", "demo", "--images-dir", "/images", "--out-dir", "/out"]
+    assert check.parse_args(base + ["--no-recursive"]).recursive is False
+    with pytest.raises(SystemExit):
+        check.parse_args(base + ["--export-media", "symlink"])
+    with pytest.raises(SystemExit):
+        check.parse_args(base + ["--materialize", "new"])
+    with pytest.raises(SystemExit):
+        check.parse_args(base + ["--hashes", "sha256"])
+
+
+def test_suffixes_subset_and_reject_unknown():
+    args = check.parse_args(
+        [
+            "--dataset",
+            "demo",
+            "--images-dir",
+            "/images",
+            "--out-dir",
+            "/out",
+            "--suffixes",
+            ".jpg,.PNG",
+        ]
+    )
+    assert args.suffixes == frozenset({".jpg", ".png"})
+    with pytest.raises(SystemExit):
+        check.parse_args(
+            [
+                "--dataset",
+                "demo",
+                "--images-dir",
+                "/images",
+                "--out-dir",
+                "/out",
+                "--suffixes",
+                ".txt",
+            ]
+        )
 
 
 def test_build_indexes_and_classify(tmp_path):
@@ -80,7 +118,7 @@ def test_build_indexes_and_classify(tmp_path):
         by_phash,
         out_dir,
         rename_by_hash=True,
-        use_phash=True,
+        match_dataset=True,
     )
     near_row = check.classify_image(
         near_path,
@@ -90,7 +128,7 @@ def test_build_indexes_and_classify(tmp_path):
         by_phash,
         out_dir,
         rename_by_hash=True,
-        use_phash=True,
+        match_dataset=True,
     )
     new_row = check.classify_image(
         new_path,
@@ -100,7 +138,7 @@ def test_build_indexes_and_classify(tmp_path):
         by_phash,
         out_dir,
         rename_by_hash=True,
-        use_phash=True,
+        match_dataset=True,
     )
     assert exact_row["status"] == "exact_dup"
     assert exact_row["sample_ids"] == "1"
@@ -112,9 +150,8 @@ def test_build_indexes_and_classify(tmp_path):
 
 
 def test_destination_hash_flat_and_dest_exists(tmp_path):
-    images_dir = tmp_path / "images"
     out_dir = tmp_path / "out"
-    path = save_rgb(images_dir / "sub" / "a.jpg", (1, 2, 3))
+    path = save_rgb(tmp_path / "images" / "sub" / "a.jpg", (1, 2, 3))
     digest = "abc123"
     dest = check.destination_for(
         out_dir, path, "new", rename_by_hash=True, sha256=digest
@@ -131,7 +168,7 @@ def test_destination_hash_flat_and_dest_exists(tmp_path):
             canonical_sha256_name=f"{digest}.jpg",
         )
     ]
-    to_write, rows, skipped = check.plan_materialize(rows, frozenset({"new"}))
+    to_write, rows, skipped = check.plan_materialize(rows)
     assert not to_write and skipped == 1
     assert rows[0]["issue"] == "dest_exists"
 
@@ -153,7 +190,7 @@ def test_corrupt_truncated_image(tmp_path):
         lambda path: sha(path.read_bytes()),
         named_phash,
         rename_by_hash=True,
-        use_phash=True,
+        match_dataset=True,
     )
     assert rows[0]["status"] == "corrupt"
     assert rows[0]["issue"] == "truncated"
@@ -176,7 +213,7 @@ def test_batch_dup_keeps_first_for_dataset_match(tmp_path):
         lambda path: sha(path.read_bytes()),
         named_phash,
         rename_by_hash=True,
-        use_phash=True,
+        match_dataset=True,
     )
     assert rows[0]["status"] == "new"
     assert rows[0]["sha256"] == digest
@@ -195,7 +232,7 @@ def test_hash_and_classify_read_error(tmp_path):
         raise OSError("no such file")
 
     rows = check.hash_and_classify(
-        [missing], {}, {}, out_dir, boom, boom, rename_by_hash=True, use_phash=True
+        [missing], {}, {}, out_dir, boom, boom, rename_by_hash=True, match_dataset=True
     )
     assert rows[0]["status"] == "corrupt"
     assert rows[0]["issue"] == "read_error"
@@ -203,9 +240,8 @@ def test_hash_and_classify_read_error(tmp_path):
 
 
 def test_ambiguous_sha256_detail(tmp_path):
-    images_dir = tmp_path / "images"
     out_dir = tmp_path / "out"
-    path = save_rgb(images_dir / "dup.jpg", (5, 5, 5))
+    path = save_rgb(tmp_path / "images" / "dup.jpg", (5, 5, 5))
     digest = named_sha(path)
     by_sha = {digest: [("1", "/a"), ("2", "/b")]}
     row = check.classify_image(
@@ -216,7 +252,7 @@ def test_ambiguous_sha256_detail(tmp_path):
         {},
         out_dir,
         rename_by_hash=True,
-        use_phash=True,
+        match_dataset=True,
     )
     assert row["status"] == "exact_dup"
     assert row["detail"] == "ambiguous_sha256"
@@ -270,7 +306,7 @@ def test_run_copies_and_dry_run(tmp_path, monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "new=1" in output and "exact_dup=1" in output and "near_dup=1" in output
     assert "written=0" in output
-    report = tmp_path / "tmp" / "check_folder_dupes_demo.csv"
+    report = tmp_path / "tmp" / "check_image_dupes_demo.csv"
     assert report.is_file()
 
     write_args = check.parse_args(
@@ -280,66 +316,48 @@ def test_run_copies_and_dry_run(tmp_path, monkeypatch, capsys):
     new_dest = out_dir / "new" / f"{named_sha(images_dir / 'new.jpg')}.jpg"
     exact_dest = out_dir / "exact_dup" / f"{named_sha(images_dir / 'exact.jpg')}.jpg"
     near_dest = out_dir / "near_dup" / f"{named_sha(images_dir / 'near.jpg')}.jpg"
-    assert new_dest.is_file()
+    assert new_dest.is_file() and not new_dest.is_symlink()
     assert exact_dest.is_file()
     assert near_dest.is_file()
     assert "written=3" in capsys.readouterr().out
 
 
-def test_materialize_new_only(tmp_path, monkeypatch, capsys):
+def test_list_images_respects_suffixes(tmp_path):
+    images_dir = tmp_path / "images"
+    save_rgb(images_dir / "a.jpg", (1, 0, 0))
+    save_rgb(images_dir / "b.png", (0, 1, 0))
+    (images_dir / "c.txt").write_text("x")
+    listed = check.list_images(images_dir, False, frozenset({".jpg"}))
+    assert [path.name for path in listed] == ["a.jpg"]
+
+
+def test_folder_only_mode_no_dataset(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     images_dir = tmp_path / "images"
     out_dir = tmp_path / "out"
-    save_rgb(images_dir / "new.jpg", (1, 0, 0))
-    save_rgb(images_dir / "exact.jpg", (2, 0, 0))
-    dataset = Dataset(
-        ["1"],
-        [named_sha(images_dir / "exact.jpg")],
-        ["ff" + "a" * 14],
-        ["/ds/exact.jpg"],
-    )
-    fo = SimpleNamespace(dataset_exists=lambda name: True, load_dataset=lambda name: dataset)
-    args = check.parse_args(
-        [
-            "--dataset",
-            "demo",
-            "--images-dir",
-            str(images_dir),
-            "--out-dir",
-            str(out_dir),
-            "--materialize",
-            "new",
-        ]
-    )
-    assert check.run(args, fo, named_sha, named_phash) == 0
-    assert (out_dir / "new" / f"{named_sha(images_dir / 'new.jpg')}.jpg").is_file()
-    assert not (out_dir / "exact_dup").exists() or not list((out_dir / "exact_dup").glob("*"))
-    assert "written=1" in capsys.readouterr().out
+    first = save_rgb(images_dir / "a.jpg", (1, 2, 3))
+    second = images_dir / "b.jpg"
+    second.write_bytes(first.read_bytes())
+    save_rgb(images_dir / "c.jpg", (9, 9, 9))
+    good = save_rgb(images_dir / "good.jpg", (4, 5, 6))
+    bad = images_dir / "bad.jpg"
+    bad.write_bytes(good.read_bytes()[: max(40, len(good.read_bytes()) // 4)])
 
-
-def test_symlink_export(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    images_dir = tmp_path / "images"
-    out_dir = tmp_path / "out"
-    source = save_rgb(images_dir / "new.jpg", (1, 0, 0))
-    dataset = Dataset([], [], [], [])
-    fo = SimpleNamespace(dataset_exists=lambda name: True, load_dataset=lambda name: dataset)
     args = check.parse_args(
-        [
-            "--dataset",
-            "demo",
-            "--images-dir",
-            str(images_dir),
-            "--out-dir",
-            str(out_dir),
-            "--export-media",
-            "symlink",
-        ]
+        ["--images-dir", str(images_dir), "--out-dir", str(out_dir)]
     )
-    assert check.run(args, fo, named_sha, named_phash) == 0
-    dest = out_dir / "new" / f"{named_sha(source)}.jpg"
-    assert dest.is_symlink()
-    assert dest.resolve() == source.resolve()
+    assert args.dataset is None
+    assert check.run(args, fo=None, compute_sha256=lambda p: sha(p.read_bytes())) == 0
+    output = capsys.readouterr().out
+    assert "dataset=none" in output
+    assert "new=3" in output
+    assert "batch_dup=1" in output
+    assert "corrupt=1" in output
+    assert "exact_dup=0" in output and "near_dup=0" in output
+    assert (tmp_path / "tmp" / "check_image_dupes_folder.csv").is_file()
+    assert (out_dir / "new").is_dir()
+    assert (out_dir / "batch_dup").is_dir()
+    assert (out_dir / "corrupt").is_dir()
 
 
 def test_missing_fields_error(tmp_path):
