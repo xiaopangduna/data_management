@@ -7,6 +7,15 @@ cd data_management
 uv sync   # Python >= 3.12
 uv run fiftyone datasets list
 uv run fiftyone app launch <dataset>
+uv run fiftyone app launch BBM08S_head --address 0.0.0.0 --port 5151
+
+export CVAT_HOST=192.168.101.118
+docker compose down
+docker compose up -d
+
+
+uv run scripts/cvat.py
+uv run scripts/cvat_load.py 
 
 # 备份
 cd /tmp
