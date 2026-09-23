@@ -17,6 +17,8 @@ docker compose up -d
 uv run scripts/cvat.py
 uv run scripts/cvat_load.py 
 
+xanylable中的label falgs接近 fiftyone的label tags，label falgs是true/false，
+attribute接近字段，是选择字段，多个选项
 # 备份
 cd /tmp
 curl -fL -o mongodb-database-tools.deb \
@@ -26,7 +28,7 @@ mongodump --version
 
 # 恢复
 启动数据库
-.venv/lib/python3.12/site-packages/fiftyone/db/bin/mongod   --dbpath "$HOME/.fiftyone/var/lib/mongo"   --logpath "$HOME/.fiftyone/var/lib/mongo/log/mongo.log"   --port 27017   --nounixsocket   --fork
+.venv/lib/python3.12/site-packages/fiftyone/db/bin/mongod   --dbpath "$HOME/.fiftyone/var/lib/mongo"   --logpath "$HOME/.fiftyone/var/lib/mongo/log/mongo.log"   --port 27017  --nounixsocket   --fork
 恢复数据库
 mongorestore   --uri="mongodb://127.0.0.1:27017"   --gzip   --archive="$HOME/project/backup/fiftyone/fiftyone_20260916.archive.gz"
 
@@ -45,9 +47,13 @@ mongodump --uri="$FIFTYONE_DATABASE_URI" --db=fiftyone --gzip --archive="/home/h
 #   --archive=/mnt/nvme_data/backup/fiftyone/fiftyone_20260910.archive.gz --drop
 
 ```
+
+
+
 # app用法
+
 查看交集标签
-打开 http://localhost:5151
+打开 [http://localhost:5151](http://localhost:5151)
 点顶部 + add stage
 选 MatchTags
 tags 填多个，例如 ["train", "big_face"]
@@ -59,6 +65,8 @@ tags 填多个，例如 ["train", "big_face"]
 ```
 导入 → 补哈希/尺寸 → 去重 → 导出标注 → 写回标注 → 导出 YOLO 训练
 ```
+
+
 
 ### Step 1：导入 FiftyOne
 
@@ -156,10 +164,12 @@ uv run python scripts/export_yolo.py \
 uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v001_baby_head --split train --sample-tags train --classes baby_head
 uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v001_baby_head --split test --sample-tags test --classes baby_head
 #导出v002数据集
-uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v002_baby_head_adult_head/ --split test --sample-tags test --classes baby_head,adult_head
 uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v002_baby_head_adult_head/ --split train --sample-tags train_v002 --classes baby_head,adult_head
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v002_baby_head_adult_head/ --split test --sample-tags test --classes baby_head,adult_head
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v002_baby_head_adult_head/ --split test_v002 --sample-tags test_v002 --classes baby_head,adult_head
 #导出v003数据集
-uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v003_baby_head/ --split train --sample-tags train_v003 --classes baby_head 
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v003_baby_head/ --split train_v003 --sample-tags train_v003 --classes baby_head 
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v003_baby_head/ --split test_v002 --sample-tags test_v002 --classes baby_head 
 uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v003_baby_head/ --split test --sample-tags test --classes baby_head 
 
 ```
@@ -180,7 +190,7 @@ uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/
   - 整图去重：`dup_*`。只描述这张图要不要进训练/复核。
   - 写回批次：`label_*`、`changed`、`xlabel_checked`。X-AnyLabeling 的 `checked` 按图；写回按 `--classes` 整图替换那几类框；`changed` 表示这张图被这批 JSON 改过。
 - 命名：无前缀来源 / split / 队列；`dup_*` 去重；`label_*` 写回批次。
-- **Label tags**（`detection.tags`）：只描述单个框，例如 `ignore`、`difficult`、`occluded`、`verified`、`needs_review`。现在不用。不要把 `train` / `relabel` / `dup_*` / `label_*` 复制到框上。YOLO txt 带不走 label tags。
+- **Label tags**（`detection.tags`）：只描述单个框，例如 `ignore`、`difficult`、`occluded`、`verified`、`needs_review`。现在不用。不要把 `train` / `relabel` / `dup_`* / `label_`* 复制到框上。YOLO txt 带不走 label tags。
 - 类别只写 `detection.label`，不要写进 sample tags 或 label tags。
 - 结构化值用字段：`filepath`、`relpath`、`sha256`、`phash`、`dup_group`、`dup_of`、`metadata`。
 - App 用来看图、筛数据、打工作流 tag，不在里面画框。工作流 tag 打在 sample 上；只有要标记单个框时才用 label tag。

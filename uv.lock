@@ -700,7 +700,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fiftyone", specifier = ">=1.21.0" },
+    { name = "fiftyone", specifier = ">=1.22.0" },
     { name = "numpy" },
     { name = "pillow" },
     { name = "scipy" },
@@ -753,7 +753,7 @@ wheels = [
 
 [[package]]
 name = "fiftyone"
-version = "1.21.0"
+version = "1.22.0"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -806,23 +806,23 @@ dependencies = [
     { name = "voxel51-eta" },
     { name = "xmltodict" },
 ]
-sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/36/aa/bc1c6d954f958ea16fae88d1a582a28f1b67cc0095e74a47b7fe71d249e7/fiftyone-1.21.0.tar.gz", hash = "sha256:c6c9a9d559b50d8f7ba375b93ae9009b1ebb31a7d250bbcb7c76305f4f55aee2", size = 23550402, upload-time = "2026-08-19T22:02:01.167Z" }
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/f2/ff/cae17b99e253ef6f96111971f1a4dea222530251ab943dea5b84e231ac1a/fiftyone-1.22.0.tar.gz", hash = "sha256:406f552dab3da1ddc1fded2458f974bf2a50807972adfa6aba49ca6f0605c427", size = 23771910, upload-time = "2026-09-12T02:00:16.708Z" }
 wheels = [
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/dd/8a/b12d8c38507d7697e27eaabde3fcae677e0c0386a260ffdb1d8775180ee1/fiftyone-1.21.0-py3-none-any.whl", hash = "sha256:9d5627c3805dcc3968cc35b7e9bc3efe79850de852607becbf3247aa9990f2e5", size = 23813823, upload-time = "2026-08-19T22:01:57.683Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/aa/e9/1fd32e9ccc73f4feac99753cd0fc67be1f0458c42758b669600b78166894/fiftyone-1.22.0-py3-none-any.whl", hash = "sha256:c82a231fb9c8d381c21efc1293a6fa3d14f6ed1d03853d6e5b7958bba4ceb75b", size = 24042275, upload-time = "2026-09-12T02:00:13.67Z" },
 ]
 
 [[package]]
 name = "fiftyone-brain"
-version = "0.24.0"
+version = "0.25.0"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
 dependencies = [
     { name = "numpy" },
     { name = "scikit-learn" },
     { name = "scipy" },
 ]
-sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/b2/01/eb2adde44b03f78bba48721657f47f7e67371f25812fae156307d62d85ad/fiftyone_brain-0.24.0.tar.gz", hash = "sha256:a58f42c655b94bbbb308b6c0da6fa9b206ed3bf815631a9c6a68e929012b5851", size = 124558, upload-time = "2026-08-11T20:45:27.144Z" }
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/6e/6e/949216bb3f13c0c55e13a544b7e25d7f064562c40ad640e13c7d30991912/fiftyone_brain-0.25.0.tar.gz", hash = "sha256:050c950e0bb9f1d4c0a8cb09ba1a4cde6a242bbbd44536337b2d90452649e656", size = 131269, upload-time = "2026-09-10T18:18:08.42Z" }
 wheels = [
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/7f/a0/1c39adf4447c69e97de43ab6d4755fc960a19192464b0bb7dff9db957cc2/fiftyone_brain-0.24.0-py3-none-any.whl", hash = "sha256:87c6472fa1d2ab3d20d28a1b8378ddc87491ac3f204a4658419385b2f56870fe", size = 120836, upload-time = "2026-08-11T20:45:25.73Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/1e/c4/fd10feb7343862b74b70cfdcc9a17feb424e07979ac3104965dbc9f71db1/fiftyone_brain-0.25.0-py3-none-any.whl", hash = "sha256:b9d3037f2a829cb8da3d02e4786262b6b5af78bc8fa00fc740f14f9011d5a17d", size = 123946, upload-time = "2026-09-10T18:18:06.871Z" },
 ]
 
 [[package]]
