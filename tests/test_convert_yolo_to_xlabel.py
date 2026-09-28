@@ -67,6 +67,23 @@ def test_reject_invalid_rows(task, tmp_path, row):
     assert not (tmp_path / "output").exists()
 
 
+def test_clamp_box_within_five_pixels(task, tmp_path):
+    # 100px-wide image: x2=1.04 is 4px past the right edge.
+    (tmp_path / "labels/train/a.txt").write_text("1 0.5 0.5 0.2 0.2\n0 0.94 0.5 0.2 0.4\n")
+    assert convert.main(task) == 0
+    shapes = json.loads((tmp_path / "output/train/a.json").read_text())["shapes"]
+    assert [shape["points"] for shape in shapes] == [[[40, 20], [60, 30]], [[84, 15], [100, 35]]]
+
+
+def test_skip_file_when_box_exceeds_five_pixels(task, tmp_path):
+    # Same image: x2=1.06 is 6px past the right edge, so the whole file is skipped.
+    (tmp_path / "labels/train/a.txt").write_text("1 0.5 0.5 0.2 0.2\n0 0.96 0.5 0.2 0.4\n")
+    assert convert.main(task) == 1
+    assert not (tmp_path / "output").exists()
+    report = (tmp_path / "tmp/convert_yolo_to_xlabel_issues.csv").read_text()
+    assert "box extends outside image by 6.0px" in report
+
+
 def test_dry_run_and_overwrite_preserve_sources(task, tmp_path):
     assert convert.main(task + ["--dry-run", "--export-media", "copy"]) == 0
     assert not (tmp_path / "output").exists()

@@ -15,6 +15,7 @@ from pathlib import Path
 from PIL import Image
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
+MAX_OUTSIDE_PX = 5
 
 
 def class_names(value: str) -> list[str]:
@@ -61,14 +62,17 @@ def parse_shapes(label: Path, names: list[str], width: int, height: int) -> list
             cx, cy, bw, bh = map(float, tokens[1:])
             if not all(math.isfinite(v) for v in (cx, cy, bw, bh)):
                 raise ValueError("coordinates must be finite")
-            if not (0 <= cx <= 1 and 0 <= cy <= 1 and 0 < bw <= 1 and 0 < bh <= 1):
-                raise ValueError("invalid normalized center or size")
+            if not (bw > 0 and bh > 0):
+                raise ValueError("box width and height must be positive")
             x1, y1, x2, y2 = cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2
-            if min(x1, y1) < -1e-6 or max(x2, y2) > 1 + 1e-6:
-                raise ValueError("box extends outside image")
-            # Clamp only tiny floating-point/YOLO serialization boundary errors.
+            outside = max(max(0.0, -x1) * width, max(0.0, -y1) * height,
+                          max(0.0, x2 - 1) * width, max(0.0, y2 - 1) * height)
+            if outside > MAX_OUTSIDE_PX:
+                raise ValueError(f"box extends outside image by {outside:.1f}px")
             points = [[max(0.0, x1) * width, max(0.0, y1) * height],
                       [min(1.0, x2) * width, min(1.0, y2) * height]]
+            if points[1][0] <= points[0][0] or points[1][1] <= points[0][1]:
+                raise ValueError("box does not intersect the image")
             shapes.append({"label": names[class_id], "points": points,
                            "group_id": None, "shape_type": "rectangle", "flags": {},
                            "description": "", "difficult": False})

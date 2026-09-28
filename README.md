@@ -12,7 +12,18 @@ uv run fiftyone app launch BBM08S_head --address 0.0.0.0 --port 5151
 export CVAT_HOST=192.168.101.118
 docker compose down
 docker compose up -d
-
+绿
+#166534
+#86efac
+橙
+#9a3412
+#fdba74
+蓝
+#1e3a8a
+#93c5fd
+紫
+#6b21a8
+#d8b4fe
 
 uv run scripts/cvat.py
 uv run scripts/cvat_load.py 
@@ -31,6 +42,8 @@ mongodump --version
 .venv/lib/python3.12/site-packages/fiftyone/db/bin/mongod   --dbpath "$HOME/.fiftyone/var/lib/mongo"   --logpath "$HOME/.fiftyone/var/lib/mongo/log/mongo.log"   --port 27017  --nounixsocket   --fork
 恢复数据库
 mongorestore   --uri="mongodb://127.0.0.1:27017"   --gzip   --archive="$HOME/project/backup/fiftyone/fiftyone_20260916.archive.gz"
+
+mongorestore   --uri="mongodb://127.0.0.1:27017"   --gzip   --archive="$HOME/project/backup/fiftyone/fiftyone_20260924.archive.gz" --drop --verbose 2>&1 | tee restore.log
 
 # 查看mongod是否运行
 pgrep -a mongod
