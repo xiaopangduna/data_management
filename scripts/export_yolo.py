@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -23,6 +25,12 @@ def names(value: str) -> list[str]:
     if len(set(items)) != len(items):
         raise argparse.ArgumentTypeError("duplicate names are not allowed")
     return items
+
+
+ATTRIBUTE_CLASS = re.compile(
+    r"^(?P<label>[^-]+)-(?P<attr>[A-Za-z][A-Za-z0-9]*)_(?P<code>\d+)$"
+)
+UNMAPPED_COLUMNS = ("sample_id", "filepath", "det_index", "label", "tags", "resolved")
 
 
 def split_name(value: str) -> str:
@@ -43,12 +51,177 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Comma-separated sample tags; match ANY tag (union).")
     parser.add_argument("--exclude-tags", type=names, default=["dup_repeat_drop", "dup_near_drop"],
                         help="Exclude samples with ANY of these tags. Default: dup_repeat_drop,dup_near_drop.")
-    parser.add_argument("--classes", type=names,
-                        help="Classes to export in class ID order; otherwise all classes sorted from selected samples.")
+    parser.add_argument(
+        "--classes", type=names,
+        help=(
+            "Classes in class ID order. Plain names match detection.label. "
+            "Names like head-age_0 use that label plus label tags age_<n>: "
+            "the highest n wins, and no such tag exports as age_0 when that class is listed. "
+            "One attribute per export. Omit to export every class, sorted."
+        ),
+    )
     parser.add_argument("--export-media", choices=("symlink", "copy"), default="symlink")
     parser.add_argument("--dry-run", action="store_true",
                         help="Validate and print the plan without writing files.")
     return parser.parse_args(argv)
+
+
+@dataclass(frozen=True)
+class AttributeExport:
+    """YOLO classes expanded from detection labels plus one tag attribute."""
+
+    attribute: str
+    default_value: str
+    labels: frozenset[str]
+    by_label_code: dict[tuple[str, int], str]
+
+
+def parse_attribute_classes(classes: list[str] | None) -> AttributeExport | None:
+    """Return attribute rules, or None when ``--classes`` are plain labels."""
+    if not classes:
+        return None
+    matches = [ATTRIBUTE_CLASS.fullmatch(name) for name in classes]
+    if not any(matches):
+        return None
+    if not all(matches):
+        raise ValueError(
+            "--classes cannot mix plain names with attribute names such as head-age_0"
+        )
+    parsed = [match for match in matches if match is not None]
+    attributes = {match.group("attr") for match in parsed}
+    if len(attributes) != 1:
+        joined = ", ".join(sorted(attributes))
+        raise ValueError(f"one --classes export accepts a single attribute, got {joined}")
+    by_label_code: dict[tuple[str, int], str] = {}
+    for match in parsed:
+        key = (match.group("label"), int(match.group("code")))
+        if key in by_label_code:
+            raise ValueError(
+                f"duplicate attribute code for {key[0]}: {by_label_code[key]} and {match.group(0)}"
+            )
+        by_label_code[key] = match.group(0)
+    attribute = next(iter(attributes))
+    return AttributeExport(
+        attribute=attribute,
+        default_value=f"{attribute}_0",
+        labels=frozenset(label for label, _code in by_label_code),
+        by_label_code=by_label_code,
+    )
+
+
+def attribute_code(tags, attribute: str) -> tuple[int, bool]:
+    """Return the highest ``attribute_<n>`` tag, or ``(0, True)`` when none exist."""
+    prefix = f"{attribute}_"
+    codes: list[int] = []
+    for tag in tags or []:
+        if not isinstance(tag, str) or not tag.startswith(prefix):
+            continue
+        suffix = tag[len(prefix):]
+        if suffix.isdigit():
+            codes.append(int(suffix))
+    if not codes:
+        return 0, True
+    return max(codes), False
+
+
+def apply_attribute_labels(label, spec: AttributeExport):
+    """Copy in-scope boxes to YOLO class names. The input label is left unchanged."""
+    import fiftyone as fo
+
+    if label is None:
+        return None, 0, 0, []
+    detections = getattr(label, "detections", None)
+    if not detections:
+        return label, 0, 0, []
+    kept = []
+    defaulted = 0
+    omitted_default = 0
+    unmapped: list[tuple[int, str]] = []
+    for index, detection in enumerate(detections):
+        if detection.label not in spec.labels:
+            continue
+        code, used_default = attribute_code(getattr(detection, "tags", None), spec.attribute)
+        yolo_label = spec.by_label_code.get((detection.label, code))
+        if yolo_label is None:
+            if used_default:
+                omitted_default += 1
+            else:
+                unmapped.append((index, f"{detection.label}-{spec.attribute}_{code}"))
+            continue
+        if used_default:
+            defaulted += 1
+        kept.append(fo.Detection(label=yolo_label, bounding_box=list(detection.bounding_box)))
+    return fo.Detections(detections=kept), defaulted, omitted_default, unmapped
+
+
+def unmapped_csv_path(dataset_name: str) -> Path:
+    """Return ``tmp/export_yolo_unmapped_<dataset>.csv``."""
+    safe = re.sub(r"[^\w.-]+", "_", dataset_name).strip("._") or "dataset"
+    directory = Path.cwd() / "tmp"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / f"export_yolo_unmapped_{safe}.csv"
+
+
+def write_unmapped_csv(path: Path, rows: list[dict[str, str]]) -> None:
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(UNMAPPED_COLUMNS))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def reject_unmapped(dataset_name: str, rows: list[dict[str, str]]) -> None:
+    """Write the unmapped-box report and abort before any export files are written."""
+    if not rows:
+        return
+    csv_path = unmapped_csv_path(dataset_name)
+    write_unmapped_csv(csv_path, rows)
+    preview = "; ".join(f"{row['sample_id']} -> {row['resolved']}" for row in rows[:5])
+    raise ValueError(
+        f"{len(rows)} boxes resolved outside --classes ({preview}). See {csv_path}"
+    )
+
+
+def inspect_samples(samples, label_field: str, attribute_export: AttributeExport | None) -> dict:
+    """Count exportable boxes. Attribute rules read label tags and do not modify samples."""
+    detected_classes: set[str] = set()
+    boxes = negatives = 0
+    defaulted_boxes = omitted_default_boxes = 0
+    unmapped_rows: list[dict[str, str]] = []
+    for sample in samples:
+        if not Path(sample.filepath).is_file():
+            raise ValueError(f"Missing image for sample {sample.id}: {sample.filepath}")
+        labels = sample[label_field]
+        detections = labels.detections if labels is not None else []
+        for detection in detections:
+            if not isinstance(detection.label, str) or not detection.label.strip():
+                raise ValueError(f"Empty class label for sample {sample.id}")
+        if attribute_export is not None:
+            labels, defaulted, omitted, unmapped = apply_attribute_labels(labels, attribute_export)
+            defaulted_boxes += defaulted
+            omitted_default_boxes += omitted
+            for index, resolved in unmapped:
+                detection = sample[label_field].detections[index]
+                unmapped_rows.append({
+                    "sample_id": sample.id,
+                    "filepath": sample.filepath,
+                    "det_index": str(index),
+                    "label": detection.label,
+                    "tags": ",".join(detection.tags or []),
+                    "resolved": resolved,
+                })
+            detections = labels.detections if labels is not None else []
+        negatives += not detections
+        boxes += len(detections)
+        for detection in detections:
+            detected_classes.add(detection.label)
+    return {
+        "detected_classes": detected_classes,
+        "boxes": boxes,
+        "negative_images": negatives,
+        "defaulted_boxes": defaulted_boxes,
+        "omitted_default_boxes": omitted_default_boxes,
+        "unmapped_rows": unmapped_rows,
+    }
 
 
 def check_output(path: Path, split: str) -> None:
@@ -79,7 +252,13 @@ def export_stem(label, classes: list[str], index: int) -> str:
     return f"{prefix}_{index:06d}"
 
 
-def make_exporter(output: Path, classes: list[str], export_media: str, split: str = "train"):
+def make_exporter(
+    output: Path,
+    classes: list[str],
+    export_media: str,
+    split: str = "train",
+    attribute_export: AttributeExport | None = None,
+):
     from fiftyone.utils.yolo import YOLOv5DatasetExporter
 
     class NamedYOLOExporter(YOLOv5DatasetExporter):
@@ -87,6 +266,11 @@ def make_exporter(output: Path, classes: list[str], export_media: str, split: st
 
         def export_sample(self, image_or_path, label, metadata=None):
             self._sample_index += 1
+            if attribute_export is not None:
+                label, _defaulted, _omitted, unmapped = apply_attribute_labels(label, attribute_export)
+                if unmapped:
+                    resolved = ", ".join(name for _index, name in unmapped)
+                    raise ValueError(f"resolved class is outside --classes: {resolved}")
             stem = export_stem(label, classes, self._sample_index)
             image_path = Path(self.data_path) / (stem + Path(image_or_path).suffix)
             self._media_exporter.export(image_or_path, outpath=str(image_path))
@@ -111,6 +295,7 @@ def make_exporter(output: Path, classes: list[str], export_media: str, split: st
 def export_dataset(args: argparse.Namespace) -> dict:
     import fiftyone as fo
 
+    attribute_export = parse_attribute_classes(args.classes)
     output = args.out_dir.expanduser().absolute()
     check_output(output, args.split)
     dataset = fo.load_dataset(args.dataset)
@@ -129,25 +314,19 @@ def export_dataset(args: argparse.Namespace) -> dict:
     if not count:
         raise ValueError("No samples match the requested tags")
 
-    if args.classes is not None:
+    if args.classes is not None and attribute_export is None:
         view = view.filter_labels(
             args.label_field, fo.ViewField("label").is_in(args.classes),
             only_matches=False,
         )
 
-    detected_classes: set[str] = set()
-    boxes = negatives = 0
-    for sample in view.iter_samples():
-        if not Path(sample.filepath).is_file():
-            raise ValueError(f"Missing image for sample {sample.id}: {sample.filepath}")
-        labels = sample[args.label_field]
-        detections = labels.detections if labels is not None else []
-        negatives += not detections
-        boxes += len(detections)
-        for detection in detections:
-            if not isinstance(detection.label, str) or not detection.label.strip():
-                raise ValueError(f"Empty class label for sample {sample.id}")
-            detected_classes.add(detection.label)
+    inspected = inspect_samples(view.iter_samples(), args.label_field, attribute_export)
+    reject_unmapped(args.dataset, inspected["unmapped_rows"])
+    detected_classes = inspected["detected_classes"]
+    boxes = inspected["boxes"]
+    negatives = inspected["negative_images"]
+    defaulted_boxes = inspected["defaulted_boxes"]
+    omitted_default_boxes = inspected["omitted_default_boxes"]
 
     classes = args.classes if args.classes is not None else sorted(detected_classes)
     summary = {
@@ -165,6 +344,11 @@ def export_dataset(args: argparse.Namespace) -> dict:
         "boxes": boxes,
         "negative_images": negatives,
     }
+    if attribute_export is not None:
+        summary["attribute"] = attribute_export.attribute
+        summary["default_value"] = attribute_export.default_value
+        summary["defaulted_boxes"] = defaulted_boxes
+        summary["omitted_default_boxes"] = omitted_default_boxes
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     if args.dry_run:
         print("Dry run: no files written.")
@@ -172,7 +356,9 @@ def export_dataset(args: argparse.Namespace) -> dict:
 
     check_output(output, args.split)
     view.export(
-        dataset_exporter=make_exporter(output, classes, args.export_media, args.split),
+        dataset_exporter=make_exporter(
+            output, classes, args.export_media, args.split, attribute_export,
+        ),
         label_field=args.label_field,
     )
     (output / "export_summary.json").write_text(

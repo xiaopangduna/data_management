@@ -1,5 +1,6 @@
 """Check generated names and real YOLO media/annotation pairing."""
 import importlib.util
+import sys
 from pathlib import Path
 
 import fiftyone as fo
@@ -10,6 +11,7 @@ spec = importlib.util.spec_from_file_location(
     "export_yolo", Path(__file__).parents[1] / "scripts/export_yolo.py"
 )
 export = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = export
 spec.loader.exec_module(export)
 
 
@@ -92,6 +94,127 @@ def test_export_duplicate_names_and_negatives(tmp_path, mode):
     lines = (output / "labels/train/baby_head__adult_head_000001.txt").read_text().splitlines()
     assert [line.split()[0] for line in lines] == ["1", "0"]
     assert (output / "dataset.yaml").is_file()
+
+
+def age_spec(*classes):
+    return export.parse_attribute_classes(list(classes))
+
+
+def detection(label, *tags, box=(0, 0, 0.5, 0.5)):
+    return fo.Detection(label=label, bounding_box=list(box), tags=list(tags))
+
+
+def test_attribute_classes_reject_mixed_axes():
+    assert export.parse_attribute_classes(["baby_head", "adult_head"]) is None
+    spec = age_spec("head-age_0", "head-age_2")
+    assert spec.attribute == "age" and spec.default_value == "age_0"
+    assert spec.by_label_code[("head", 2)] == "head-age_2"
+    with pytest.raises(ValueError, match="mix plain"):
+        age_spec("head", "head-age_0")
+    with pytest.raises(ValueError, match="single attribute"):
+        age_spec("head-age_0", "head-eye_0")
+    with pytest.raises(ValueError, match="duplicate attribute code"):
+        age_spec("head-age_0", "head-age_00")
+
+
+def test_attribute_resolution_uses_max_tag_or_default():
+    spec = age_spec("head-age_0", "head-age_2", "head-age_10")
+    bare = detection("head")
+    highest = detection("head", "age_0", "age_1", "age_2", "eye_0")
+    explicit_zero = detection("head", "age_0")
+    other = detection("face", "age_2")
+    source = fo.Detections(detections=[bare, highest, explicit_zero, other])
+    label, defaulted, omitted, unmapped = export.apply_attribute_labels(source, spec)
+    assert [item.label for item in label.detections] == ["head-age_0", "head-age_2", "head-age_0"]
+    assert defaulted == 1 and omitted == 0 and unmapped == []
+    assert bare.label == "head" and bare.tags == []
+    assert highest.tags == ["age_0", "age_1", "age_2", "eye_0"]
+
+    wider = age_spec("head-age_2", "head-age_10")
+    label, defaulted, omitted, unmapped = export.apply_attribute_labels(
+        fo.Detections(detections=[detection("head", "age_2", "age_10")]), wider,
+    )
+    assert [item.label for item in label.detections] == ["head-age_10"]
+    assert defaulted == 0
+
+    label, defaulted, omitted, unmapped = export.apply_attribute_labels(
+        fo.Detections(detections=[detection("head", "age_1"), bare]), spec,
+    )
+    assert unmapped == [(0, "head-age_1")]
+    assert [item.label for item in label.detections] == ["head-age_0"]
+    assert defaulted == 1
+
+    only_adult = age_spec("head-age_2")
+    label, defaulted, omitted, unmapped = export.apply_attribute_labels(
+        fo.Detections(detections=[bare]), only_adult,
+    )
+    assert label.detections == [] and omitted == 1 and defaulted == 0 and unmapped == []
+
+    eyes = export.parse_attribute_classes(["head-eye_0", "head-eye_1"])
+    label, defaulted, omitted, unmapped = export.apply_attribute_labels(
+        fo.Detections(detections=[detection("head", "eye_0", "eye_1"), detection("head", "age_2")]),
+        eyes,
+    )
+    assert [item.label for item in label.detections] == ["head-eye_1", "head-eye_0"]
+    assert defaulted == 1 and unmapped == []
+
+
+def test_attribute_export_writes_resolved_class_ids(tmp_path):
+    source = tmp_path / "src.jpg"
+    Image.new("RGB", (10, 10), "red").save(source)
+    output = tmp_path / "out"
+    classes = ["head-age_0", "head-age_2"]
+    spec = export.parse_attribute_classes(classes)
+    boxes = fo.Detections(detections=[
+        detection("head", "age_2", box=(0.1, 0.2, 0.3, 0.4)),
+        detection("head", box=(0.5, 0.5, 0.2, 0.2)),
+    ])
+    with export.make_exporter(output, classes, "copy", attribute_export=spec) as writer:
+        writer.export_sample(str(source), boxes)
+    stem = "head-age_0__head-age_2_000001"
+    annotation = (output / "labels/train" / f"{stem}.txt").read_text().splitlines()
+    assert [line.split()[0] for line in annotation] == ["1", "0"]
+    assert [float(part) for part in annotation[0].split()[1:]] == pytest.approx([0.25, 0.4, 0.3, 0.4])
+    assert (output / "images/train" / f"{stem}.jpg").is_file()
+    assert boxes.detections[0].label == "head"
+
+
+class FakeSample:
+    def __init__(self, sample_id, filepath, label):
+        self.id = sample_id
+        self.filepath = filepath
+        self.ground_truth = label
+
+    def __getitem__(self, key):
+        return getattr(self, key)
+
+
+def test_inspect_samples_counts_defaults_and_lists_unmapped(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    image = tmp_path / "image.jpg"
+    Image.new("RGB", (10, 10), "red").save(image)
+    spec = age_spec("head-age_0", "head-age_2")
+    original = fo.Detections(detections=[
+        detection("head"),
+        detection("head", "age_0", "age_2"),
+        detection("face", "age_2"),
+    ])
+    samples = [
+        FakeSample("keep", str(image), original),
+        FakeSample("bad", str(image), fo.Detections(detections=[detection("head", "age_1")])),
+    ]
+    inspected = export.inspect_samples(samples, "ground_truth", spec)
+    assert inspected["boxes"] == 2
+    assert inspected["defaulted_boxes"] == 1
+    assert inspected["omitted_default_boxes"] == 0
+    assert inspected["negative_images"] == 1
+    assert inspected["unmapped_rows"][0]["resolved"] == "head-age_1"
+    assert [item.label for item in original.detections] == ["head", "head", "face"]
+    with pytest.raises(ValueError, match="keep -> head-age_1|bad -> head-age_1"):
+        export.reject_unmapped("demo", inspected["unmapped_rows"])
+    report = tmp_path / "tmp" / "export_yolo_unmapped_demo.csv"
+    assert "head-age_1" in report.read_text()
+    assert not (tmp_path / "images").exists()
 
 
 def test_export_uses_custom_split_folder(tmp_path):
