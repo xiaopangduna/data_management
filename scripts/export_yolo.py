@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import re
 import sys
@@ -30,7 +29,6 @@ def names(value: str) -> list[str]:
 ATTRIBUTE_CLASS = re.compile(
     r"^(?P<label>[^-]+)-(?P<attr>[A-Za-z][A-Za-z0-9]*)_(?P<code>\d+)$"
 )
-UNMAPPED_COLUMNS = ("sample_id", "filepath", "det_index", "label", "tags", "resolved")
 
 
 def split_name(value: str) -> str:
@@ -57,6 +55,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Classes in class ID order. Plain names match detection.label. "
             "Names like head-age_0 use that label plus label tags age_<n>: "
             "the highest n wins, and no such tag exports as age_0 when that class is listed. "
+            "Boxes that resolve to an unlisted class are omitted. "
             "One attribute per export. Omit to export every class, sorted."
         ),
     )
@@ -154,39 +153,11 @@ def apply_attribute_labels(label, spec: AttributeExport):
     return fo.Detections(detections=kept), defaulted, omitted_default, unmapped
 
 
-def unmapped_csv_path(dataset_name: str) -> Path:
-    """Return ``tmp/export_yolo_unmapped_<dataset>.csv``."""
-    safe = re.sub(r"[^\w.-]+", "_", dataset_name).strip("._") or "dataset"
-    directory = Path.cwd() / "tmp"
-    directory.mkdir(parents=True, exist_ok=True)
-    return directory / f"export_yolo_unmapped_{safe}.csv"
-
-
-def write_unmapped_csv(path: Path, rows: list[dict[str, str]]) -> None:
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(UNMAPPED_COLUMNS))
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def reject_unmapped(dataset_name: str, rows: list[dict[str, str]]) -> None:
-    """Write the unmapped-box report and abort before any export files are written."""
-    if not rows:
-        return
-    csv_path = unmapped_csv_path(dataset_name)
-    write_unmapped_csv(csv_path, rows)
-    preview = "; ".join(f"{row['sample_id']} -> {row['resolved']}" for row in rows[:5])
-    raise ValueError(
-        f"{len(rows)} boxes resolved outside --classes ({preview}). See {csv_path}"
-    )
-
-
 def inspect_samples(samples, label_field: str, attribute_export: AttributeExport | None) -> dict:
     """Count exportable boxes. Attribute rules read label tags and do not modify samples."""
     detected_classes: set[str] = set()
     boxes = negatives = 0
-    defaulted_boxes = omitted_default_boxes = 0
-    unmapped_rows: list[dict[str, str]] = []
+    defaulted_boxes = omitted_default_boxes = omitted_boxes = 0
     for sample in samples:
         if not Path(sample.filepath).is_file():
             raise ValueError(f"Missing image for sample {sample.id}: {sample.filepath}")
@@ -199,16 +170,7 @@ def inspect_samples(samples, label_field: str, attribute_export: AttributeExport
             labels, defaulted, omitted, unmapped = apply_attribute_labels(labels, attribute_export)
             defaulted_boxes += defaulted
             omitted_default_boxes += omitted
-            for index, resolved in unmapped:
-                detection = sample[label_field].detections[index]
-                unmapped_rows.append({
-                    "sample_id": sample.id,
-                    "filepath": sample.filepath,
-                    "det_index": str(index),
-                    "label": detection.label,
-                    "tags": ",".join(detection.tags or []),
-                    "resolved": resolved,
-                })
+            omitted_boxes += len(unmapped)
             detections = labels.detections if labels is not None else []
         negatives += not detections
         boxes += len(detections)
@@ -220,7 +182,7 @@ def inspect_samples(samples, label_field: str, attribute_export: AttributeExport
         "negative_images": negatives,
         "defaulted_boxes": defaulted_boxes,
         "omitted_default_boxes": omitted_default_boxes,
-        "unmapped_rows": unmapped_rows,
+        "omitted_boxes": omitted_boxes,
     }
 
 
@@ -267,10 +229,7 @@ def make_exporter(
         def export_sample(self, image_or_path, label, metadata=None):
             self._sample_index += 1
             if attribute_export is not None:
-                label, _defaulted, _omitted, unmapped = apply_attribute_labels(label, attribute_export)
-                if unmapped:
-                    resolved = ", ".join(name for _index, name in unmapped)
-                    raise ValueError(f"resolved class is outside --classes: {resolved}")
+                label, _defaulted, _omitted, _unmapped = apply_attribute_labels(label, attribute_export)
             stem = export_stem(label, classes, self._sample_index)
             image_path = Path(self.data_path) / (stem + Path(image_or_path).suffix)
             self._media_exporter.export(image_or_path, outpath=str(image_path))
@@ -321,7 +280,6 @@ def export_dataset(args: argparse.Namespace) -> dict:
         )
 
     inspected = inspect_samples(view.iter_samples(), args.label_field, attribute_export)
-    reject_unmapped(args.dataset, inspected["unmapped_rows"])
     detected_classes = inspected["detected_classes"]
     boxes = inspected["boxes"]
     negatives = inspected["negative_images"]
@@ -349,6 +307,7 @@ def export_dataset(args: argparse.Namespace) -> dict:
         summary["default_value"] = attribute_export.default_value
         summary["defaulted_boxes"] = defaulted_boxes
         summary["omitted_default_boxes"] = omitted_default_boxes
+        summary["omitted_boxes"] = inspected["omitted_boxes"]
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     if args.dry_run:
         print("Dry run: no files written.")

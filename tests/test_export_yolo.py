@@ -189,11 +189,10 @@ class FakeSample:
         return getattr(self, key)
 
 
-def test_inspect_samples_counts_defaults_and_lists_unmapped(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
+def test_inspect_samples_omits_classes_outside_the_request(tmp_path):
     image = tmp_path / "image.jpg"
     Image.new("RGB", (10, 10), "red").save(image)
-    spec = age_spec("head-age_0", "head-age_2")
+    spec = age_spec("head-age_0")
     original = fo.Detections(detections=[
         detection("head"),
         detection("head", "age_0", "age_2"),
@@ -201,20 +200,16 @@ def test_inspect_samples_counts_defaults_and_lists_unmapped(tmp_path, monkeypatc
     ])
     samples = [
         FakeSample("keep", str(image), original),
-        FakeSample("bad", str(image), fo.Detections(detections=[detection("head", "age_1")])),
+        FakeSample("older", str(image), fo.Detections(detections=[detection("head", "age_1")])),
     ]
     inspected = export.inspect_samples(samples, "ground_truth", spec)
-    assert inspected["boxes"] == 2
+    assert inspected["boxes"] == 1
     assert inspected["defaulted_boxes"] == 1
     assert inspected["omitted_default_boxes"] == 0
+    assert inspected["omitted_boxes"] == 2
     assert inspected["negative_images"] == 1
-    assert inspected["unmapped_rows"][0]["resolved"] == "head-age_1"
+    assert inspected["detected_classes"] == {"head-age_0"}
     assert [item.label for item in original.detections] == ["head", "head", "face"]
-    with pytest.raises(ValueError, match="keep -> head-age_1|bad -> head-age_1"):
-        export.reject_unmapped("demo", inspected["unmapped_rows"])
-    report = tmp_path / "tmp" / "export_yolo_unmapped_demo.csv"
-    assert "head-age_1" in report.read_text()
-    assert not (tmp_path / "images").exists()
 
 
 def test_export_uses_custom_split_folder(tmp_path):
