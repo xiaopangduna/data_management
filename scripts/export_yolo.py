@@ -55,8 +55,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Classes in class ID order. Plain names match detection.label. "
             "Names like head-age_0 use that label plus label tags age_<n>: "
             "the highest n wins, and no such tag exports as age_0 when that class is listed. "
-            "Boxes that resolve to an unlisted class are omitted. "
-            "One attribute per export. Omit to export every class, sorted."
+            "Plain names may share an export with one attribute when they are not that "
+            "attribute's label. Boxes that resolve to an unlisted class are omitted. "
+            "Omit to export every class, sorted."
         ),
     )
     parser.add_argument("--export-media", choices=("symlink", "copy"), default="symlink")
@@ -73,6 +74,7 @@ class AttributeExport:
     default_value: str
     labels: frozenset[str]
     by_label_code: dict[tuple[str, int], str]
+    plain_labels: frozenset[str]
 
 
 def parse_attribute_classes(classes: list[str] | None) -> AttributeExport | None:
@@ -82,11 +84,8 @@ def parse_attribute_classes(classes: list[str] | None) -> AttributeExport | None
     matches = [ATTRIBUTE_CLASS.fullmatch(name) for name in classes]
     if not any(matches):
         return None
-    if not all(matches):
-        raise ValueError(
-            "--classes cannot mix plain names with attribute names such as head-age_0"
-        )
     parsed = [match for match in matches if match is not None]
+    plain = [name for name, match in zip(classes, matches) if match is None]
     attributes = {match.group("attr") for match in parsed}
     if len(attributes) != 1:
         joined = ", ".join(sorted(attributes))
@@ -99,12 +98,20 @@ def parse_attribute_classes(classes: list[str] | None) -> AttributeExport | None
                 f"duplicate attribute code for {key[0]}: {by_label_code[key]} and {match.group(0)}"
             )
         by_label_code[key] = match.group(0)
+    labels = frozenset(label for label, _code in by_label_code)
+    overlap = sorted(set(plain) & labels)
+    if overlap:
+        joined = ", ".join(overlap)
+        raise ValueError(
+            f"--classes plain name overlaps an attribute label: {joined}"
+        )
     attribute = next(iter(attributes))
     return AttributeExport(
         attribute=attribute,
         default_value=f"{attribute}_0",
-        labels=frozenset(label for label, _code in by_label_code),
+        labels=labels,
         by_label_code=by_label_code,
+        plain_labels=frozenset(plain),
     )
 
 
@@ -137,6 +144,11 @@ def apply_attribute_labels(label, spec: AttributeExport):
     omitted_default = 0
     unmapped: list[tuple[int, str]] = []
     for index, detection in enumerate(detections):
+        if detection.label in spec.plain_labels:
+            kept.append(fo.Detection(
+                label=detection.label, bounding_box=list(detection.bounding_box),
+            ))
+            continue
         if detection.label not in spec.labels:
             continue
         code, used_default = attribute_code(getattr(detection, "tags", None), spec.attribute)

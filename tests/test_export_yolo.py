@@ -109,7 +109,10 @@ def test_attribute_classes_reject_mixed_axes():
     spec = age_spec("head-age_0", "head-age_2")
     assert spec.attribute == "age" and spec.default_value == "age_0"
     assert spec.by_label_code[("head", 2)] == "head-age_2"
-    with pytest.raises(ValueError, match="mix plain"):
+    mixed = age_spec("head-age_0", "baby_body")
+    assert mixed.plain_labels == frozenset({"baby_body"})
+    assert mixed.labels == frozenset({"head"})
+    with pytest.raises(ValueError, match="overlaps an attribute label"):
         age_spec("head", "head-age_0")
     with pytest.raises(ValueError, match="single attribute"):
         age_spec("head-age_0", "head-eye_0")
@@ -158,6 +161,15 @@ def test_attribute_resolution_uses_max_tag_or_default():
     assert [item.label for item in label.detections] == ["head-eye_1", "head-eye_0"]
     assert defaulted == 1 and unmapped == []
 
+    mixed = age_spec("head-age_0", "baby_body")
+    body = detection("baby_body", "age_2")
+    label, defaulted, omitted, unmapped = export.apply_attribute_labels(
+        fo.Detections(detections=[bare, body, detection("face")]), mixed,
+    )
+    assert [item.label for item in label.detections] == ["head-age_0", "baby_body"]
+    assert defaulted == 1 and omitted == 0 and unmapped == []
+    assert body.label == "baby_body" and body.tags == ["age_2"]
+
 
 def test_attribute_export_writes_resolved_class_ids(tmp_path):
     source = tmp_path / "src.jpg"
@@ -177,6 +189,23 @@ def test_attribute_export_writes_resolved_class_ids(tmp_path):
     assert [float(part) for part in annotation[0].split()[1:]] == pytest.approx([0.25, 0.4, 0.3, 0.4])
     assert (output / "images/train" / f"{stem}.jpg").is_file()
     assert boxes.detections[0].label == "head"
+
+    mixed_output = tmp_path / "mixed"
+    mixed_classes = ["head-age_0", "baby_body"]
+    mixed = export.parse_attribute_classes(mixed_classes)
+    mixed_boxes = fo.Detections(detections=[
+        detection("head", box=(0.1, 0.1, 0.2, 0.2)),
+        detection("baby_body", "age_2", box=(0.4, 0.4, 0.3, 0.3)),
+        detection("face"),
+    ])
+    with export.make_exporter(
+        mixed_output, mixed_classes, "copy", attribute_export=mixed,
+    ) as writer:
+        writer.export_sample(str(source), mixed_boxes)
+    mixed_stem = "head-age_0__baby_body_000001"
+    mixed_lines = (mixed_output / "labels/train" / f"{mixed_stem}.txt").read_text().splitlines()
+    assert [line.split()[0] for line in mixed_lines] == ["0", "1"]
+    assert mixed_boxes.detections[1].label == "baby_body"
 
 
 class FakeSample:

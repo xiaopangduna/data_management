@@ -193,7 +193,7 @@ uv run python scripts/export_yolo.py   --dataset BBM08S_head   --out-dir /home/h
 uv run python scripts/export_yolo.py   --dataset BBM08S_head   --out-dir /home/huangwenhua/project/dataset/head/v011_head_age   --split train_v012   --sample-tags train_v012   --classes head-age_0,head-age_1,head-age_2,head-age_3
 
 #导出v021数据集
-uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head_body/v021_baby_head_body/ --split train_v003 --sample-tags train_v003 --classes head-age_0,baby_body
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head_body/v021_baby_head_body/ --split train_v003 --sample-tags train_v021 --classes head-age_0,baby_body
 uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head_body/v021_baby_head_body/ --split test_v002 --sample-tags test_v002 --classes head-age_0,baby_body
 
 ```
