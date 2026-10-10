@@ -3,56 +3,19 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import os
 from pathlib import Path
 import shutil
 import stat
 import sys
-import tempfile
 import time
 
 DEFAULT_DIRECTORY = Path('/mnt/nvme_data/data/head_train_data/baby_head_adult_head')
 
 
-def fingerprint(info: os.stat_result) -> tuple[int, ...]:
-    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-
-
 def materialize(link: Path, destination: Path) -> None:
     """Copy a regular file or file symlink without modifying the source."""
-    before = link.lstat()
-    target = link.resolve(strict=True)
-    temporary = None
-    try:
-        with target.open('rb') as source:
-            source_before = os.fstat(source.fileno())
-            if not stat.S_ISREG(source_before.st_mode):
-                raise ValueError(f'Not a regular file: {target}')
-            with tempfile.NamedTemporaryFile(dir=destination.parent, prefix='.materialize-', delete=False) as output:
-                temporary = Path(output.name)
-                digest = hashlib.sha256()
-                while chunk := source.read(1024 * 1024):
-                    output.write(chunk)
-                    digest.update(chunk)
-                output.flush()
-                os.fsync(output.fileno())
-            with temporary.open('rb') as check:
-                if hashlib.file_digest(check, 'sha256').digest() != digest.digest():
-                    raise OSError('Copy SHA-256 mismatch')
-            if fingerprint(os.fstat(source.fileno())) != fingerprint(source_before):
-                raise OSError('Source changed during copy')
-            os.chmod(temporary, stat.S_IMODE(source_before.st_mode))
-            os.utime(temporary, ns=(source_before.st_atime_ns, source_before.st_mtime_ns))
-        if fingerprint(link.lstat()) != fingerprint(before) or link.resolve(strict=True) != target:
-            raise OSError('Input changed during copy')
-        if fingerprint(target.stat()) != fingerprint(source_before):
-            raise OSError('Source changed before replacement')
-        # Publish without overwriting an existing destination.
-        os.link(temporary, destination)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+    shutil.copy2(link, destination, follow_symlinks=True)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -131,6 +94,9 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         if stream is not None:
             stream.close()
+        if not args.dry_run:
+            print('Syncing written files to disk...', flush=True)
+            os.sync()
         report(final=True)
     if args.dry_run:
         print('Preview only; no output created. bytes is the estimated copy size.')
