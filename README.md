@@ -348,3 +348,10 @@ uv run python scripts/update_tags.py \
 
 
 # cvat联动
+http://localhost:8080
+可通过字段，与fiftyonbe和cvat标注
+fifityone发布
+cavte标注，
+fiftyone收回
+fityone重新发布异常的标注数据
+fiftyone收回
