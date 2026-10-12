@@ -69,6 +69,44 @@ def test_project_classes_must_match_when_project_exists():
         cvat.ensure_project_classes({"baby_head", "person"}, ["baby_head"])
 
 
+def test_select_attribute_becomes_a_dropdown():
+    args = cvat.parse_args(
+        [
+            "--dataset", "coco2017",
+            "--sample-tags", "relabel",
+            "--anno-key", "cvat_person_age",
+            "--classes", "person",
+            "--attributes", "age=age_0,age_2,age_0",
+        ]
+    )
+    schema = cvat.attribute_schema(args.attributes)
+    assert schema == {
+        "age": {"type": "select", "values": ["age_0", "age_2"], "mutable": True},
+    }
+    with pytest.raises(SystemExit):
+        cvat.parse_args(
+            [
+                "--dataset", "coco2017",
+                "--sample-tags", "relabel",
+                "--anno-key", "cvat_person_age",
+                "--classes", "person",
+                "--attributes", "age",
+            ]
+        )
+    with pytest.raises(ValueError, match="Duplicate attribute"):
+        cvat.attribute_schema([
+            ("age", {"type": "select", "values": ["age_0"], "mutable": True}),
+            ("age", {"type": "select", "values": ["age_2"], "mutable": True}),
+        ])
+
+
+def test_existing_project_must_already_have_requested_attributes():
+    cvat.ensure_project_attributes(None, ["person"], {"age": {}})
+    cvat.ensure_project_attributes({"person": {"age"}}, ["person"], {"age": {}})
+    with pytest.raises(ValueError, match="missing attributes"):
+        cvat.ensure_project_attributes({"person": set()}, ["person"], {"age": {}})
+
+
 def test_select_view_keeps_samples_with_every_tag(tmp_path):
     dataset = fo.Dataset()
     try:

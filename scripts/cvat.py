@@ -53,6 +53,30 @@ def anno_key(value: str) -> str:
     return key
 
 
+def select_attribute(value: str) -> tuple[str, dict]:
+    """Parse ``name=option1,option2`` into one CVAT select attribute."""
+    if "=" not in value:
+        raise argparse.ArgumentTypeError("use name=option1,option2")
+    name, raw = value.split("=", 1)
+    name = name.strip()
+    options = list(dict.fromkeys(part.strip() for part in raw.split(",") if part.strip()))
+    if not name or not options:
+        raise argparse.ArgumentTypeError("use name=option1,option2")
+    if name == "label_id":
+        raise argparse.ArgumentTypeError("label_id is reserved")
+    return name, {"type": "select", "values": options, "mutable": True}
+
+
+def attribute_schema(items: list[tuple[str, dict]]) -> dict[str, dict]:
+    """Merge parsed attributes. A repeated name is rejected."""
+    schema: dict[str, dict] = {}
+    for name, spec in items:
+        if name in schema:
+            raise ValueError(f"Duplicate attribute: {name}")
+        schema[name] = spec
+    return schema
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse CLI arguments for a CVAT publish run."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -86,6 +110,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_LABEL_FIELD,
         type=nonempty,
         help=f"Detections field to publish (default: {DEFAULT_LABEL_FIELD}).",
+    )
+    parser.add_argument(
+        "--attributes",
+        action="append",
+        default=[],
+        type=select_attribute,
+        help="Box field sent to CVAT as a dropdown: name=option1,option2. Repeat to send more fields.",
     )
     parser.add_argument(
         "--dry-run",
@@ -134,16 +165,59 @@ def cvat_credentials() -> tuple[str, str, str]:
     return values["FIFTYONE_CVAT_URL"], values["FIFTYONE_CVAT_USERNAME"], values["FIFTYONE_CVAT_PASSWORD"]
 
 
-def project_label_names(url: str, username: str, password: str, project_name: str) -> set[str] | None:
-    """Return labels of an existing CVAT project, or None when it does not exist."""
+def project_label_attributes(
+    url: str, username: str, password: str, project_name: str
+) -> dict[str, set[str]] | None:
+    """Return each label's attribute names, or None when the project does not exist."""
     from fiftyone.utils.cvat import CVATAnnotationAPI
 
     api = CVATAnnotationAPI("cvat", url, username=username, password=password)
     project_id = api.get_project_id(project_name)
     if project_id is None:
         return None
-    labels = api._get_project_labels(project_id)
-    return {str(label["name"]) for label in labels}
+    found: dict[str, set[str]] = {}
+    for label in api._get_project_labels(project_id):
+        names = set()
+        for attr in label.get("attributes") or []:
+            attr_name = str(attr.get("name", ""))
+            if attr_name and attr_name != "label_id":
+                names.add(attr_name)
+        found[str(label["name"])] = names
+    return found
+
+
+def project_label_names(url: str, username: str, password: str, project_name: str) -> set[str] | None:
+    """Return labels of an existing CVAT project, or None when it does not exist."""
+    found = project_label_attributes(url, username, password, project_name)
+    if found is None:
+        return None
+    return set(found)
+
+
+def ensure_project_attributes(
+    existing: dict[str, set[str]] | None,
+    classes: list[str],
+    attributes: dict[str, dict],
+) -> None:
+    """Require an existing project to already define each requested box field.
+
+    FiftyOne keeps the project's label spec and does not add attributes on a
+    later upload. A new ``--project-name`` creates the dropdowns with the task.
+    """
+    if existing is None or not attributes:
+        return
+    missing = []
+    for class_name in classes:
+        absent = [name for name in attributes if name not in existing.get(class_name, set())]
+        if absent:
+            missing.append(f"{class_name}: {','.join(absent)}")
+    if not missing:
+        return
+    detail = "; ".join(missing)
+    raise ValueError(
+        f"CVAT project is missing attributes ({detail}). "
+        "Choose another --project-name so the new project is created with these attributes."
+    )
 
 
 def ensure_detections_field(dataset: fo.Dataset, label_field: str) -> None:
@@ -272,6 +346,7 @@ def run(args: argparse.Namespace) -> int:
     view = select_view(dataset, args.sample_tags)
     project_name = resolve_project_name(args.dataset, args.project_name)
     tag = pending_tag(args.anno_key)
+    attributes = attribute_schema(args.attributes)
     selected = len(view)
     if selected == 0:
         raise ValueError("No samples matched --sample-tags.")
@@ -284,6 +359,9 @@ def run(args: argparse.Namespace) -> int:
             "dataset": args.dataset,
             "sample_tags": ",".join(args.sample_tags),
             "classes": ",".join(args.classes),
+            "attributes": ";".join(
+                f"{name}={','.join(spec['values'])}" for name, spec in attributes.items()
+            ),
             "anno_key": args.anno_key,
             "project_name": project_name,
             "task_name": args.anno_key,
@@ -301,17 +379,17 @@ def run(args: argparse.Namespace) -> int:
 
     install_quiet_cvat_errors()
     url, username, password = cvat_credentials()
-    ensure_project_classes(
-        project_label_names(url, username, password, project_name),
-        args.classes,
-    )
+    existing_attributes = project_label_attributes(url, username, password, project_name)
+    existing_classes = None if existing_attributes is None else set(existing_attributes)
+    ensure_project_classes(existing_classes, args.classes)
+    ensure_project_attributes(existing_attributes, args.classes, attributes)
     view.annotate(
         args.anno_key,
         backend="cvat",
         label_field=args.label_field,
         label_type="detections",
         classes=args.classes,
-        attributes=False,
+        attributes=attributes or False,
         url=url,
         username=username,
         password=password,
