@@ -25,8 +25,8 @@ docker compose up -d
 #6b21a8
 #d8b4fe
 
-uv run scripts/cvat.py
-uv run scripts/cvat_load.py 
+uv run python scripts/cvat.py --dataset BBM08S_head --sample-tags relabel --anno-key cvat_head_261012 --classes baby_head,adult_head --dry-run
+uv run python scripts/cvat_load.py --dataset BBM08S_head --anno-key cvat_head_261012 --classes baby_head,adult_head --sample-tags label_cvat_261012 --dry-run 
 
 xanylable中的label falgs接近 fiftyone的label tags，label falgs是true/false，
 attribute接近字段，是选择字段，多个选项
@@ -148,6 +148,38 @@ uv run python scripts/export_xlabel.py \
 
 不经过 FiftyOne、只把 YOLO txt 转成 X-AnyLabeling JSON：`scripts/convert_yolo_to_xlabel.py`。
 
+### 发布到 CVAT
+
+按 sample tags 选出要改的图，把 `--classes` 里已有的框发到 CVAT。其它类别留在库里，不上传。CVAT 单次上传不能超过 1 GB，并且一个请求里每张图都会占一个打开的文件。脚本按文件大小和张数把这一批切成多个任务，每个任务控制在 800 MB、512 张以内。这些任务共用一个项目和一个 `--anno-key`；多于一个任务时，CVAT 里的名字是 `<anno-key>_1`、`<anno-key>_2`。`--project-name` 默认等于 `--dataset`，项目里的类别必须和 `--classes` 一致。`--anno-key` 不能重复，成功后样本会打上 `cvat_<anno-key>`。
+
+先设置连接：
+
+```bash
+export FIFTYONE_CVAT_URL='http://192.168.101.118:8080'
+export FIFTYONE_CVAT_USERNAME='...'
+export FIFTYONE_CVAT_PASSWORD='...'
+```
+
+```bash
+uv run python scripts/cvat.py \
+  --dataset BBM08S_head \
+  --sample-tags relabel \
+  --anno-key cvat_head_261012 \
+  --classes baby_head,adult_head \
+  --dry-run
+```
+
+去掉 `--dry-run` 后才会上传。标完后用同一个 `--anno-key` 写回：只替换 `--classes`，框有变化的样本追加 `--sample-tags` 和 `changed`。坐标变化不超过 0.002（约 2 像素 / 1000 像素宽）视为未改，用来忽略 CVAT 的像素取整。
+
+```bash
+uv run python scripts/cvat_load.py \
+  --dataset BBM08S_head \
+  --anno-key cvat_head_261012 \
+  --classes baby_head,adult_head \
+  --sample-tags label_cvat_261012 \
+  --dry-run
+```
+
 ### Step 5：写回标注
 
 只替换 `--classes` 里的类；其它类不动。变更样本会打 `--sample-tags` 和 `changed`。从同一任务目录读图片和 JSON，按 `sample_id` 匹配；没有有效 ID 时再按任务图片 SHA-256 匹配。不使用 filepath / 文件名 / phash。库须先有 `sha256` 字段（`update_media.py`）。
@@ -189,7 +221,7 @@ uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/
 
 # 导出 v005
 uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v005_baby_head/ --split train_v005 --sample-tags train_v005 --classes head-age_0
-uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v005_baby_head/ --split test_v003 --sample-tags test_v003 --classes head-age_0
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v005_baby_head/ --split test_v003 --sample-tags test_v003 --classes head-age_0 --export-media copy
 
 
 # 导出 v011
@@ -215,7 +247,8 @@ uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/
 - Tag 只表示有/无。需要键值（标注员、日期、置信度）时用字段或 attributes。
 - **Sample tags**（选图、排队、整图质量）：
   - 来源 / split：`head`、`train`、`val`、`test`、`train_bed` 等。导入时打上，导出 YOLO 按它们选图。
-  - 工作队列：`relabel`、`review`。App 或 `update_tags.py` 打上，导出 X-AnyLabeling 按它们选图。
+  - 工作队列：`relabel`、`review`。App 或 `update_tags.py` 打上，导出 X-AnyLabeling 或发布 CVAT 按它们选图。
+  - CVAT 批次：`cvat_<anno-key>`。`cvat.py` 发布成功后打上，表示这张图已在该次任务里。
   - 整图去重：`dup_*`。只描述这张图要不要进训练/复核。
   - 写回批次：`label_*`、`changed`、`xlabel_checked`。X-AnyLabeling 的 `checked` 按图；写回按 `--classes` 整图替换那几类框；`changed` 表示这张图被这批 JSON 改过。
 - 命名：无前缀来源 / split / 队列；`dup_*` 去重；`label_*` 写回批次。
@@ -234,6 +267,7 @@ scripts/
   check_image_dupes.py
   export_xlabel.py / export_yolo.py
   convert_yolo_to_xlabel.py
+  cvat.py / cvat_load.py
   extract_by_name.py
 ```
 
@@ -311,3 +345,6 @@ uv run python scripts/update_tags.py \
 ```
 
 默认只扫描当前层；包含子目录时加 `--recursive`。确认统计后去掉 `--dry-run` 正式写库。相同内容的多份输入图片只更新对应样本一次；同一哈希对应多个库内样本时跳过。未匹配图片、读取失败、库内缺少哈希及多样本匹配记录到 `tmp/update_tags_<数据集>.csv`（每次运行覆盖，预览也会生成）。整库缺少 `sha256` 字段时直接报错，提示先补哈希。
+
+
+# cvat联动
