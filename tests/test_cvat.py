@@ -179,14 +179,27 @@ def test_load_merges_only_requested_classes():
     assert set(by_label) == {"adult_head", "baby_head"}
     assert by_label["adult_head"] == [0.1, 0.1, 0.2, 0.2]
     assert by_label["baby_head"] == [0.6, 0.6, 0.2, 0.2]
-    assert cvat_load.boxes_changed(before, merged, names)
+    assert cvat_load.boxes_changed(before, merged, names, frame_size=(1000, 1000))
     jitter = fo.Detections(detections=[
-        fo.Detection(label="baby_head", bounding_box=[0.2001, 0.2, 0.2, 0.2]),
+        fo.Detection(label="baby_head", bounding_box=[0.202, 0.2, 0.2, 0.2]),
     ])
     original = fo.Detections(detections=[
         fo.Detection(label="baby_head", bounding_box=[0.2, 0.2, 0.2, 0.2]),
     ])
-    assert not cvat_load.boxes_changed(original, jitter, names)
+    assert not cvat_load.boxes_changed(original, jitter, names, frame_size=(1000, 1000))
+    swapped = fo.Detections(detections=[
+        fo.Detection(label="baby_head", bounding_box=[0.055, 0.05, 0.1, 0.1]),
+        fo.Detection(label="baby_head", bounding_box=[0.05, 0.20, 0.1, 0.1]),
+    ])
+    ordered = fo.Detections(detections=[
+        fo.Detection(label="baby_head", bounding_box=[0.05, 0.05, 0.1, 0.1]),
+        fo.Detection(label="baby_head", bounding_box=[0.06, 0.20, 0.1, 0.1]),
+    ])
+    assert not cvat_load.boxes_changed(ordered, swapped, names, frame_size=(200, 200))
+    moved = fo.Detections(detections=[
+        fo.Detection(label="baby_head", bounding_box=[0.5, 0.5, 0.2, 0.2]),
+    ])
+    assert cvat_load.boxes_changed(original, moved, names, frame_size=(200, 200))
     assert cvat_load.append_changed_tags(["relabel", "changed"], ["label_cvat_261012"]) == [
         "relabel",
         "changed",

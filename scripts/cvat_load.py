@@ -18,7 +18,8 @@ import fiftyone as fo
 logger = logging.getLogger(__name__)
 
 CHANGED_TAG = "changed"
-BOX_TOLERANCE = 0.002
+# CVAT stores integer pixels. A few pixels of rounding, on a small image, is not an edit.
+PIXEL_TOLERANCE = 5.0
 
 
 def nonempty(value: str) -> str:
@@ -90,30 +91,91 @@ def detection_list(value: object) -> list:
     return list(detections or [])
 
 
-def class_boxes(value: object, names: set[str]) -> tuple:
-    """Return sorted ``(label, box)`` rows for labels in ``names``."""
-    rows = []
+def class_boxes(value: object, names: set[str]) -> dict[str, list[tuple[float, float, float, float]]]:
+    """Group normalized ``(x, y, w, h)`` boxes by label for labels in ``names``."""
+    grouped: dict[str, list[tuple[float, float, float, float]]] = {}
     for detection in detection_list(value):
         label = str(detection.label)
         if label not in names:
             continue
         box = tuple(float(item) for item in detection.bounding_box)
-        rows.append((label, box))
-    return tuple(sorted(rows))
+        grouped.setdefault(label, []).append(box)
+    return grouped
 
 
-def boxes_changed(before: object, after: object, names: set[str], tolerance: float = BOX_TOLERANCE) -> bool:
-    """Return True when requested boxes differ by more than ``tolerance``."""
+def pixel_box(box: tuple[float, float, float, float], frame_size: tuple[float, float]) -> tuple[float, float, float, float]:
+    """Convert a normalized box to pixels."""
+    width, height = frame_size
+    x, y, w, h = box
+    return (x * width, y * height, w * width, h * height)
+
+
+def boxes_match(left: list[tuple[float, ...]], right: list[tuple[float, ...]], tolerance: float) -> bool:
+    """Return True when the two lists can be paired with each edge within ``tolerance``."""
+    if len(left) != len(right):
+        return False
+    candidates = []
+    for box in left:
+        partners = [
+            index
+            for index, other in enumerate(right)
+            if all(abs(item - other_item) <= tolerance for item, other_item in zip(box, other))
+        ]
+        if not partners:
+            return False
+        candidates.append(partners)
+    used = [False] * len(right)
+
+    def search(index: int) -> bool:
+        if index == len(candidates):
+            return True
+        for partner in candidates[index]:
+            if used[partner]:
+                continue
+            used[partner] = True
+            if search(index + 1):
+                return True
+            used[partner] = False
+        return False
+
+    return search(0)
+
+
+def boxes_changed(
+    before: object,
+    after: object,
+    names: set[str],
+    frame_size: tuple[float, float] | None = None,
+    tolerance: float = PIXEL_TOLERANCE,
+) -> bool:
+    """Return True when requested boxes were added, removed, or moved.
+
+    Boxes of the same label are matched to each other, not compared in sorted
+    order. With ``frame_size``, ``tolerance`` is in pixels. Without it,
+    coordinates stay normalized and the allowance is ``tolerance / 1000``.
+    """
     left = class_boxes(before, names)
     right = class_boxes(after, names)
-    if len(left) != len(right):
+    if set(left) != set(right):
         return True
-    for (label_before, box_before), (label_after, box_after) in zip(left, right):
-        if label_before != label_after or len(box_before) != len(box_after):
-            return True
-        if any(abs(item_before - item_after) > tolerance for item_before, item_after in zip(box_before, box_after)):
+    limit = tolerance if frame_size else tolerance / 1000.0
+    for label in left:
+        before_boxes = left[label]
+        after_boxes = right[label]
+        if frame_size:
+            before_boxes = [pixel_box(box, frame_size) for box in before_boxes]
+            after_boxes = [pixel_box(box, frame_size) for box in after_boxes]
+        if not boxes_match(before_boxes, after_boxes, limit):
             return True
     return False
+
+
+def frame_size_of(sample: fo.Sample) -> tuple[float, float] | None:
+    """Return ``(width, height)`` when the sample metadata has both."""
+    metadata = sample.metadata
+    if metadata is None or not metadata.width or not metadata.height:
+        return None
+    return (float(metadata.width), float(metadata.height))
 
 
 def merge_class_detections(before: object, after: object, names: set[str]) -> fo.Detections:
@@ -163,7 +225,7 @@ def apply_load(
         downloaded = sample[label_field] if dataset.has_field(label_field) else None
         merged = merge_class_detections(previous, downloaded, names)
         sample[label_field] = merged
-        if boxes_changed(previous, merged, names):
+        if boxes_changed(previous, merged, names, frame_size=frame_size_of(sample)):
             sample.tags = append_changed_tags(sample.tags, extra_tags)
             changed += 1
         else:

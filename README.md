@@ -169,7 +169,7 @@ uv run python scripts/cvat.py \
   --dry-run
 ```
 
-去掉 `--dry-run` 后才会上传。标完后用同一个 `--anno-key` 写回：只替换 `--classes`，框有变化的样本追加 `--sample-tags` 和 `changed`。坐标变化不超过 0.002（约 2 像素 / 1000 像素宽）视为未改，用来忽略 CVAT 的像素取整。
+去掉 `--dry-run` 后才会上传。标完后用同一个 `--anno-key` 写回：只替换 `--classes`，框有变化的样本追加 `--sample-tags` 和 `changed`。同一类别的框按位置互相配对，不按排序顺序硬比。有图像宽高时，每条边移动不超过 5 像素视为未改，用来忽略 CVAT 的像素取整。框的数量变了仍然算改过。
 
 ```bash
 uv run python scripts/cvat_load.py \
@@ -177,6 +177,40 @@ uv run python scripts/cvat_load.py \
   --anno-key cvat_head_261012 \
   --classes baby_head,adult_head \
   --sample-tags label_cvat_261012 \
+  --dry-run
+```
+
+框上的 `age_0` 这类 tag 不会随发布送进 CVAT。要让人在 CVAT 里改年龄，先把 tag 抄成字段，再用新的 `--project-name` 发布。旧项目里没有这个字段，不能复用。`age:0-2` 表示字段 `age` 取值 `0`、`1`、`2`，对应 tag `age_0`、`age_1`、`age_2`。多个 `age_*` 取最大的数字；没有则写成 `0`。超出范围的 tag 记在 CSV 里，该字段不写。原来的 tag 先留着。
+
+```bash
+uv run python scripts/update_label_attributes.py \
+  --dataset BBM08S_head \
+  --sample-tags pred_v121_bad \
+  --classes head \
+  --fields age:0-2 \
+  --dry-run
+```
+
+```bash
+uv run python scripts/cvat.py \
+  --dataset BBM08S_head \
+  --sample-tags pred_v121_bad \
+  --classes head \
+  --attributes age=0,1,2 \
+  --anno-key cvat_head_261013 \
+  --project-name BBM08S_head_age \
+  --dry-run
+```
+
+标完后用同一个 `--anno-key` 跑 `cvat_load.py` 写回框。再用字段覆盖 `age_*` tag，其它 tag 不动。字段和原来的 tag 不一致时，追加 `--sample-tags` 和 `changed`。只改了框、没改年龄的图仍由 `cvat_load.py` 打 `changed`。YOLO 导出读的是这些 tag。
+
+```bash
+uv run python scripts/update_tags_from_attributes.py \
+  --dataset BBM08S_head \
+  --anno-key cvat_head_261013 \
+  --classes head \
+  --fields age:0-2 \
+  --sample-tags label_cvat_261013 \
   --dry-run
 ```
 
@@ -268,6 +302,7 @@ scripts/
   export_xlabel.py / export_yolo.py
   convert_yolo_to_xlabel.py
   cvat.py / cvat_load.py
+  update_label_attributes.py / update_tags_from_attributes.py
   extract_by_name.py
 ```
 
@@ -355,3 +390,36 @@ cavte标注，
 fiftyone收回
 fityone重新发布异常的标注数据
 fiftyone收回
+
+http://192.168.101.118:8080
+
+uv run python scripts/update_label_attributes.py \
+  --dataset BBM08S_head \
+  --sample-tags pred_v121_bad \
+  --classes head \
+  --fields age:0-2 \
+  --dry-run
+
+uv run python scripts/cvat.py \
+  --dataset BBM08S_head \
+  --sample-tags pred_v121_bad \
+  --classes head \
+  --attributes age=0,1,2 \
+  --anno-key cvat_head_261013 \
+  --project-name BBM08S_head_age \
+  --dry-run
+
+uv run python scripts/cvat_load.py \
+  --dataset BBM08S_head \
+  --anno-key cvat_head_261013 \
+  --classes head \
+  --sample-tags label_cvat_261013 \
+  --dry-run
+
+uv run python scripts/update_tags_from_attributes.py \
+  --dataset BBM08S_head \
+  --anno-key cvat_head_261013 \
+  --classes head \
+  --fields age:0-2 \
+  --sample-tags label_cvat_261013 \
+  --dry-run
