@@ -169,7 +169,7 @@ uv run python scripts/cvat.py \
   --dry-run
 ```
 
-去掉 `--dry-run` 后才会上传。标完后用同一个 `--anno-key` 写回：只替换 `--classes`，框有变化的样本追加 `--sample-tags` 和 `changed`。同一类别的框按位置互相配对，不按排序顺序硬比。有图像宽高时，每条边移动不超过 5 像素视为未改，用来忽略 CVAT 的像素取整。框的数量变了仍然算改过。
+去掉 `--dry-run` 后才会上传。标完后用同一个 `--anno-key` 写回：只替换 `--classes`。框有变化，或这次任务带上的字段（例如 `age`）变了，样本追加 `--sample-tags` 和 `changed`。同一类别的框按位置互相配对，不按排序顺序硬比。有图像宽高时，每条边移动不超过 5 像素视为未改，用来忽略 CVAT 的像素取整。框的数量变了仍然算改过。配对上的框会保留原来的 `age_*` 这类 tag，方便下一步用字段覆盖。
 
 ```bash
 uv run python scripts/cvat_load.py \
@@ -202,15 +202,14 @@ uv run python scripts/cvat.py \
   --dry-run
 ```
 
-标完后用同一个 `--anno-key` 跑 `cvat_load.py` 写回框。再用字段覆盖 `age_*` tag，其它 tag 不动。字段和原来的 tag 不一致时，追加 `--sample-tags` 和 `changed`。只改了框、没改年龄的图仍由 `cvat_load.py` 打 `changed`。YOLO 导出读的是这些 tag。
+标完后用同一个 `--anno-key` 跑 `cvat_load.py` 写回框。框变了或 `age` 变了都会打上 `changed`。再用字段覆盖 `age_*` tag，其它 tag 不动。`--sample-tags` 选出要处理的图，字段和原来的 tag 不一致时打上 `changed`。YOLO 导出读的是这些 tag。
 
 ```bash
 uv run python scripts/update_tags_from_attributes.py \
   --dataset BBM08S_head \
-  --anno-key cvat_head_261013 \
+  --sample-tags cvat_head_age_261013 \
   --classes head \
   --fields age:0-2 \
-  --sample-tags label_cvat_261013 \
   --dry-run
 ```
 
@@ -257,6 +256,13 @@ uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/
 uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v005_baby_head/ --split train_v005 --sample-tags train_v005 --classes head-age_0
 uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v005_baby_head/ --split test_v003 --sample-tags test_v003 --classes head-age_0 --export-media copy
 
+#导出v006数据集
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v006_baby_head/ --split train_v006 --sample-tags train_v006 --classes head-age_0
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v006_baby_head/ --split test_v002 --sample-tags test_v002 --classes head-age_0
+
+#导出v007数据集
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v007_baby_head/ --split train_v007 --sample-tags train_v007 --classes head-age_0
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v007_baby_head/ --split test_v002 --sample-tags test_v002 --classes head-age_0
 
 # 导出 v011
 uv run python scripts/export_yolo.py   --dataset BBM08S_head   --out-dir /home/huangwenhua/project/dataset/head/v011_head_age   --split train_v011   --sample-tags train_v011   --classes head-age_0,head-age_1,head-age_2   --dry-run
@@ -418,8 +424,7 @@ uv run python scripts/cvat_load.py \
 
 uv run python scripts/update_tags_from_attributes.py \
   --dataset BBM08S_head \
-  --anno-key cvat_head_261013 \
+  --sample-tags cvat_head_age_261013 \
   --classes head \
   --fields age:0-2 \
-  --sample-tags label_cvat_261013 \
   --dry-run

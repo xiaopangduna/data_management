@@ -146,7 +146,6 @@ def test_apply_tag_sync_marks_only_disagreements(tmp_path):
             "ground_truth",
             {"head"},
             [tags_from.FieldSpec("age", 0, 2)],
-            ["label_cvat_261013"],
             dry_run=False,
         )
         assert (changed, unchanged) == (1, 1)
@@ -158,7 +157,7 @@ def test_apply_tag_sync_marks_only_disagreements(tmp_path):
         assert boxes[2].tags == ["age_0"]
         assert boxes[3].tags == ["age_2"]
         assert boxes[4].tags == ["age_0"]
-        assert loaded.tags == ["cvat_cvat_head_261013", "label_cvat_261013", "changed"]
+        assert loaded.tags == ["cvat_cvat_head_261013", "changed"]
         assert dataset[still_id].tags == ["cvat_cvat_head_261013"]
     finally:
         dataset.delete()

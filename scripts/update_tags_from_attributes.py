@@ -1,10 +1,9 @@
-"""Rewrite label tags from detection fields after a CVAT load.
+"""Rewrite label tags from detection fields already stored on the samples.
 
 ``--fields age:0-2`` reads field ``age`` and replaces that box's ``age_*`` tags
-with one tag, ``age_<value>``. Other tags stay. A sample is tagged with
-``--sample-tags`` and ``changed`` when any requested box's tag family differs
-from its field. A missing or unexpected field value is reported and that box's
-tags are left as they are.
+with one tag, ``age_<value>``. Other tags stay. A sample gains ``changed`` when
+any requested box's tag family differs from its field. A missing or unexpected
+field value is reported and that box's tags are left as they are.
 """
 
 from __future__ import annotations
@@ -21,6 +20,7 @@ import fiftyone as fo
 logger = logging.getLogger(__name__)
 
 CHANGED_TAG = "changed"
+DEFAULT_LABEL_FIELD = "ground_truth"
 FIELD_SPEC_PATTERN = re.compile(r"([A-Za-z][A-Za-z0-9_]*):(\d+)-(\d+)")
 
 
@@ -70,7 +70,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse CLI arguments for rewriting label tags from fields."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", required=True, type=nonempty)
-    parser.add_argument("--anno-key", required=True, type=nonempty)
+    parser.add_argument(
+        "--sample-tags",
+        required=True,
+        type=name_list,
+        help="Require ALL of these sample tags.",
+    )
     parser.add_argument(
         "--classes",
         required=True,
@@ -85,10 +90,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Field read back into tags: name:low-high. Repeat to read more fields.",
     )
     parser.add_argument(
-        "--sample-tags",
-        required=True,
-        type=name_list,
-        help="Tags added, with 'changed', on samples whose field and tags disagree.",
+        "--label-field",
+        default=DEFAULT_LABEL_FIELD,
+        type=nonempty,
+        help=f"Detections field to read (default: {DEFAULT_LABEL_FIELD}).",
     )
     parser.add_argument(
         "--dry-run",
@@ -96,15 +101,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Print the plan and write the issue CSV without changing tags.",
     )
     return parser.parse_args(argv)
-
-
-def label_field_from_run(info: object) -> str:
-    """Return the single label field recorded on an annotation run."""
-    config = getattr(info, "config", None)
-    schema = getattr(config, "label_schema", None) or {}
-    if len(schema) != 1:
-        raise ValueError("Annotation run must contain exactly one label field")
-    return str(next(iter(schema)))
 
 
 def tags_for_value(tags: object, spec: FieldSpec, value: str) -> tuple[list[str], bool]:
@@ -172,12 +168,11 @@ def plan_detection(
     return tags, issues
 
 
-def append_changed_tags(existing: object, extra: list[str]) -> list[str]:
-    """Append batch tags and ``changed`` without dropping existing tags."""
+def append_changed_tag(existing: object) -> list[str]:
+    """Append ``changed`` without dropping existing tags."""
     tags = [str(tag) for tag in (existing or [])]
-    for tag in [*extra, CHANGED_TAG]:
-        if tag not in tags:
-            tags.append(tag)
+    if CHANGED_TAG not in tags:
+        tags.append(CHANGED_TAG)
     return tags
 
 
@@ -187,7 +182,6 @@ def apply_tag_sync(
     label_field: str,
     names: set[str],
     specs: list[FieldSpec],
-    extra_tags: list[str],
     dry_run: bool,
 ) -> tuple[int, int, list[dict[str, str]]]:
     """Rewrite tags from fields. Returns changed samples, unchanged samples, and issues."""
@@ -214,7 +208,7 @@ def apply_tag_sync(
             changed += 1
             if not dry_run:
                 sample[label_field] = label
-                sample.tags = append_changed_tags(sample.tags, extra_tags)
+                sample.tags = append_changed_tag(sample.tags)
         else:
             unchanged += 1
     if not dry_run:
@@ -253,25 +247,26 @@ def print_report(values: dict[str, object]) -> None:
 
 
 def run(args: argparse.Namespace) -> int:
-    """Rewrite label tags from fields on one annotation run."""
+    """Rewrite label tags from fields on samples that have every requested tag."""
     require_specs(args.fields)
     if not fo.dataset_exists(args.dataset):
         raise ValueError(f"Dataset does not exist: {args.dataset}")
     dataset = fo.load_dataset(args.dataset)
-    if args.anno_key not in dataset.list_annotation_runs():
-        raise ValueError(f"Annotation run does not exist: {args.anno_key}")
-    label_field = label_field_from_run(dataset.get_annotation_info(args.anno_key))
-    view = dataset.load_annotation_view(args.anno_key)
+    if args.label_field not in dataset.get_field_schema():
+        raise ValueError(f"Dataset has no field: {args.label_field}")
+    field = dataset.get_field(args.label_field)
+    if not issubclass(field.document_type, fo.Detections):
+        raise ValueError(f"Field '{args.label_field}' is not Detections")
+    view = dataset.match_tags(args.sample_tags, bool=True, all=True)
     sample_ids = [str(sample_id) for sample_id in view.values("id")]
     if not sample_ids:
-        raise ValueError(f"Annotation run '{args.anno_key}' has no samples.")
+        raise ValueError("No samples matched --sample-tags.")
     changed, unchanged, issues = apply_tag_sync(
         dataset,
         sample_ids,
-        label_field,
+        args.label_field,
         set(args.classes),
         args.fields,
-        args.sample_tags,
         args.dry_run,
     )
     report = write_issues(args.dataset, issues)
@@ -279,8 +274,7 @@ def run(args: argparse.Namespace) -> int:
         {
             "mode": "dry-run" if args.dry_run else "update",
             "dataset": args.dataset,
-            "anno_key": args.anno_key,
-            "label_field": label_field,
+            "label_field": args.label_field,
             "classes": ",".join(args.classes),
             "fields": ",".join(f"{spec.name}:{spec.low}-{spec.high}" for spec in args.fields),
             "sample_tags": ",".join(args.sample_tags),

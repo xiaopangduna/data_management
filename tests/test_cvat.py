@@ -245,6 +245,58 @@ def test_apply_load_tags_changed_samples(tmp_path):
         dataset.delete()
 
 
+def test_age_edit_counts_as_changed(tmp_path):
+    dataset = fo.Dataset()
+    try:
+        path = tmp_path / "a.jpg"
+        Image.new("RGB", (100, 100)).save(path)
+        before_box = fo.Detection(label="head", tags=["age_0", "ignore"], bounding_box=[0.2, 0.2, 0.2, 0.2])
+        before_box.set_attribute_value("age", "0")
+        sample = fo.Sample(
+            filepath=str(path),
+            tags=["relabel"],
+            ground_truth=fo.Detections(detections=[before_box]),
+            metadata=fo.ImageMetadata(width=100, height=100),
+        )
+        sample_id = str(dataset.add_sample(sample))
+        previous = sample.ground_truth
+        edited = fo.Detection(label="head", bounding_box=[0.2, 0.2, 0.2, 0.2])
+        edited.set_attribute_value("age", "1")
+        sample.ground_truth = fo.Detections(detections=[edited])
+        sample.save()
+        changed, unchanged = cvat_load.apply_load(
+            dataset,
+            [sample_id],
+            {sample_id: previous},
+            "ground_truth",
+            {"head"},
+            ["cvat_head_age_261013"],
+            ["age"],
+        )
+        assert (changed, unchanged) == (1, 0)
+        loaded = dataset[sample_id]
+        box = loaded.ground_truth.detections[0]
+        assert box.get_attribute_value("age") == "1"
+        assert box.tags == ["age_0", "ignore"]
+        assert loaded.tags == ["relabel", "cvat_head_age_261013", "changed"]
+    finally:
+        dataset.delete()
+
+
+def test_same_age_is_not_changed():
+    before_box = fo.Detection(label="head", tags=["age_1"], bounding_box=[0.2, 0.2, 0.2, 0.2])
+    before_box.set_attribute_value("age", "1")
+    after_box = fo.Detection(label="head", bounding_box=[0.202, 0.2, 0.2, 0.2])
+    after_box.set_attribute_value("age", "1")
+    before = fo.Detections(detections=[before_box])
+    after = fo.Detections(detections=[after_box])
+    assert not cvat_load.boxes_changed(before, after, {"head"}, frame_size=(1000, 1000), attribute_names=["age"])
+    info = SimpleNamespace(config=SimpleNamespace(label_schema={
+        "ground_truth": {"type": "detections", "attributes": {"age": {"type": "select", "values": ["0", "1", "2"]}}},
+    }))
+    assert cvat_load.attribute_names_from_run(info) == ["age"]
+
+
 def test_label_field_comes_from_the_run():
     info = SimpleNamespace(config=SimpleNamespace(label_schema={"ground_truth": {}}))
     assert cvat_load.label_field_from_run(info) == "ground_truth"
