@@ -27,7 +27,7 @@ def names(value: str) -> list[str]:
 
 
 ATTRIBUTE_CLASS = re.compile(
-    r"^(?P<label>[^-]+)-(?P<attr>[A-Za-z][A-Za-z0-9]*)_(?P<code>\d+)$"
+    r"^(?P<label>[^-]+)-(?P<attr>[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z][A-Za-z0-9]*)*)_(?P<code>\d+)$"
 )
 
 
@@ -53,8 +53,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--classes", type=names,
         help=(
             "Classes in class ID order. Plain names match detection.label. "
-            "Names like head-age_0 use that label plus label tags age_<n>: "
-            "the highest n wins, and no such tag exports as age_0 when that class is listed. "
+            "Names like head-age_0 or head-eye_open_0 use that label plus label tags "
+            "age_<n> or eye_open_<n>: "
+            "the highest n wins, and no such tag exports as <attribute>_0 when that class is listed. "
             "Plain names may share an export with one attribute when they are not that "
             "attribute's label. Boxes that resolve to an unlisted class are omitted. "
             "Omit to export every class, sorted."

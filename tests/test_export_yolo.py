@@ -161,6 +161,23 @@ def test_attribute_resolution_uses_max_tag_or_default():
     assert [item.label for item in label.detections] == ["head-eye_1", "head-eye_0"]
     assert defaulted == 1 and unmapped == []
 
+    eye_open = export.parse_attribute_classes(
+        ["head-eye_open_0", "head-eye_open_1", "head-eye_open_2"]
+    )
+    assert eye_open.attribute == "eye_open" and eye_open.default_value == "eye_open_0"
+    label, defaulted, omitted, unmapped = export.apply_attribute_labels(
+        fo.Detections(detections=[
+            detection("head", "eye_open_1", "eye_open_2"),
+            detection("head"),
+            detection("head", "eye_1"),
+        ]),
+        eye_open,
+    )
+    assert [item.label for item in label.detections] == [
+        "head-eye_open_2", "head-eye_open_0", "head-eye_open_0",
+    ]
+    assert defaulted == 2 and omitted == 0 and unmapped == []
+
     mixed = age_spec("head-age_0", "baby_body")
     body = detection("baby_body", "age_2")
     label, defaulted, omitted, unmapped = export.apply_attribute_labels(
