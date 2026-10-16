@@ -67,10 +67,11 @@ def test_apply_attributes_writes_fields_and_keeps_tags(tmp_path):
                 fo.Detection(label="person", tags=["age_1"], bounding_box=[0.5, 0.5, 0.2, 0.2]),
             ]),
         )))
-        updated, unchanged, issues = attributes.apply_attributes(
+        updated, unchanged, issues, overwrites = attributes.apply_attributes(
             dataset, [sample_id], "ground_truth", {"head"}, [AGE], dry_run=False,
         )
         assert (updated, unchanged) == (1, 1)
+        assert overwrites == []
         assert issues[0]["issue"] == "out_of_range"
         assert issues[0]["detail"] == "age_9"
         loaded = dataset[sample_id].ground_truth.detections
@@ -95,11 +96,72 @@ def test_dry_run_does_not_write_fields(tmp_path):
                 fo.Detection(label="head", tags=["age_1"], bounding_box=[0.1, 0.1, 0.2, 0.2]),
             ]),
         )))
-        updated, unchanged, issues = attributes.apply_attributes(
+        updated, unchanged, issues, overwrites = attributes.apply_attributes(
+            dataset, [sample_id], "ground_truth", {"head"}, [AGE], dry_run=True,
+        )
+        assert (updated, unchanged, issues, overwrites) == (1, 0, [], [])
+        assert dataset[sample_id].ground_truth.detections[0].has_attribute("age") is False
+        assert dataset[sample_id].tags == ["relabel"]
+    finally:
+        dataset.delete()
+
+
+def test_overwriting_a_stored_value_tags_the_sample(tmp_path):
+    dataset = fo.Dataset()
+    try:
+        path = tmp_path / "a.jpg"
+        Image.new("RGB", (8, 8)).save(path)
+        filled = fo.Detection(label="head", tags=["age_1"], bounding_box=[0.1, 0.1, 0.2, 0.2])
+        replaced = fo.Detection(label="head", tags=["age_2", "ignore"], bounding_box=[0.3, 0.3, 0.2, 0.2])
+        replaced.set_attribute_value("age", "0")
+        same = fo.Detection(label="head", tags=["age_2"], bounding_box=[0.5, 0.5, 0.2, 0.2])
+        same.set_attribute_value("age", "2")
+        sample_id = str(dataset.add_sample(fo.Sample(
+            filepath=str(path),
+            tags=["train_v001_copy"],
+            ground_truth=fo.Detections(detections=[filled, replaced, same]),
+        )))
+        updated, unchanged, issues, overwrites = attributes.apply_attributes(
+            dataset, [sample_id], "ground_truth", {"head"}, [AGE], dry_run=False,
+        )
+        assert (updated, unchanged, issues) == (2, 1, [])
+        assert overwrites[0]["issue"] == "overwritten"
+        assert overwrites[0]["old"] == "0"
+        assert overwrites[0]["new"] == "2"
+        assert overwrites[0]["field"] == "age"
+        loaded = dataset[sample_id]
+        boxes = loaded.ground_truth.detections
+        assert boxes[0].get_attribute_value("age") == "1"
+        assert boxes[0].tags == ["age_1"]
+        assert boxes[1].get_attribute_value("age") == "2"
+        assert boxes[1].tags == ["age_2", "ignore"]
+        assert boxes[2].tags == ["age_2"]
+        assert loaded.tags == ["train_v001_copy", "changed"]
+    finally:
+        dataset.delete()
+
+
+def test_dry_run_reports_overwrites_without_tagging(tmp_path):
+    dataset = fo.Dataset()
+    try:
+        path = tmp_path / "a.jpg"
+        Image.new("RGB", (8, 8)).save(path)
+        replaced = fo.Detection(label="head", tags=["age_2"], bounding_box=[0.1, 0.1, 0.2, 0.2])
+        replaced.set_attribute_value("age", "0")
+        sample_id = str(dataset.add_sample(fo.Sample(
+            filepath=str(path),
+            tags=["train_v001_copy"],
+            ground_truth=fo.Detections(detections=[replaced]),
+        )))
+        updated, unchanged, issues, overwrites = attributes.apply_attributes(
             dataset, [sample_id], "ground_truth", {"head"}, [AGE], dry_run=True,
         )
         assert (updated, unchanged, issues) == (1, 0, [])
-        assert dataset[sample_id].ground_truth.detections[0].has_attribute("age") is False
+        assert overwrites[0]["old"] == "0"
+        assert overwrites[0]["new"] == "2"
+        loaded = dataset[sample_id]
+        assert loaded.ground_truth.detections[0].get_attribute_value("age") == "0"
+        assert loaded.tags == ["train_v001_copy"]
     finally:
         dataset.delete()
 

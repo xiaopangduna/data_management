@@ -237,10 +237,11 @@ uv run python scripts/export_yolo.py \
   --dataset BBM08S_head \
   --out-dir /path/to/BBM08S_head_yolo \
   --sample-tags train \
-  --classes baby_head,adult_head
+  --classes head-age_0
 #导出v001数据集
-uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v001_baby_head --split train --sample-tags train --classes baby_head
-uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v001_baby_head --split test --sample-tags test --classes baby_head
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v001_baby_head --split train_v001 --sample-tags train_v001 --classes head-age_0
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v001_baby_head --split test_v002 --sample-tags test_v002 --classes head-age_0
+
 #导出v002数据集
 uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v002_baby_head_adult_head/ --split train --sample-tags train_v002 --classes baby_head,adult_head
 uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v002_baby_head_adult_head/ --split test --sample-tags test --classes baby_head,adult_head
@@ -251,6 +252,11 @@ uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/
 uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v003_baby_head/ --split test_v002 --sample-tags test_v002 --classes head-age_0
 
 uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v003_baby_head/ --split train_v003 --sample-tags train_v003 --classes head-age_0 
+
+# 导出 v004 
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v004_baby_head/ --split train_v004 --sample-tags train_v004 --classes head-age_0
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v004_baby_head/ --split test_v002 --sample-tags test_v002 --classes head-age_0
+
 
 # 导出 v005
 uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v005_baby_head/ --split train_v005 --sample-tags train_v005 --classes head-age_0

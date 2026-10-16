@@ -3,7 +3,9 @@
 ``--fields age:0-2`` writes field ``age`` with values ``0``, ``1``, or ``2``.
 When several ``age_*`` tags are present, the highest number in range is kept.
 A box with none of those tags gets the low end of the range. Tags outside the
-range are reported and that field is left unset. Existing tags are not removed.
+range are reported and that field is left unset. Existing label tags are not
+removed. Replacing a value already stored on the field adds the sample tag
+``changed`` and records the old and new values. Filling a missing field does not.
 """
 
 from __future__ import annotations
@@ -19,8 +21,10 @@ import fiftyone as fo
 
 logger = logging.getLogger(__name__)
 
+CHANGED_TAG = "changed"
 DEFAULT_LABEL_FIELD = "ground_truth"
 FIELD_SPEC_PATTERN = re.compile(r"([A-Za-z][A-Za-z0-9_]*):(\d+)-(\d+)")
+ISSUE_COLUMNS = ("issue", "sample_id", "label", "detection_id", "field", "old", "new", "detail")
 
 
 @dataclass(frozen=True)
@@ -97,7 +101,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Print the plan and write the issue CSV without changing fields.",
+        help="Print the plan and write the CSV without changing fields or sample tags.",
     )
     return parser.parse_args(argv)
 
@@ -141,26 +145,75 @@ def issue_row(
         "label": label,
         "detection_id": detection_id,
         "field": field,
+        "old": "",
+        "new": "",
         "detail": detail,
     }
 
 
-def plan_detection(detection: fo.Detection, names: set[str], specs: list[FieldSpec]) -> tuple[dict[str, str], list[dict[str, str]]]:
-    """Return field writes and issue rows for one detection. Sample id is filled later."""
+def overwrite_row(
+    label: str,
+    detection_id: str,
+    field: str,
+    old: str,
+    new: str,
+) -> dict[str, str]:
+    """One CSV row for a field whose stored value was replaced."""
+    return {
+        "issue": "overwritten",
+        "sample_id": "",
+        "label": label,
+        "detection_id": detection_id,
+        "field": field,
+        "old": old,
+        "new": new,
+        "detail": "",
+    }
+
+
+def stored_value(current: object) -> str | None:
+    """Return the stored field text, or None when the field is missing."""
+    if current is None:
+        return None
+    text = str(current).strip()
+    if not text:
+        return None
+    return text
+
+
+def append_changed_tag(existing: object) -> list[str]:
+    """Append ``changed`` without dropping existing sample tags."""
+    tags = [str(tag) for tag in (existing or [])]
+    if CHANGED_TAG not in tags:
+        tags.append(CHANGED_TAG)
+    return tags
+
+
+def plan_detection(
+    detection: fo.Detection,
+    names: set[str],
+    specs: list[FieldSpec],
+) -> tuple[dict[str, str], list[dict[str, str]], list[dict[str, str]]]:
+    """Return field writes, issue rows, and overwrite rows. Sample id is filled later."""
     if str(detection.label) not in names:
-        return {}, []
+        return {}, [], []
     writes: dict[str, str] = {}
     issues: list[dict[str, str]] = []
+    overwrites: list[dict[str, str]] = []
     detection_id = str(getattr(detection, "id", "") or "")
+    label = str(detection.label)
     for spec in specs:
         value, outside = attribute_from_tags(detection.tags, spec)
         if outside:
-            issues.append(issue_row("", str(detection.label), detection_id, spec.name, ",".join(outside)))
+            issues.append(issue_row("", label, detection_id, spec.name, ",".join(outside)))
             continue
-        current = detection.get_attribute_value(spec.name, None)
-        if current is None or str(current) != value:
+        current = stored_value(detection.get_attribute_value(spec.name, None))
+        if current is None:
             writes[spec.name] = value
-    return writes, issues
+        elif current != value:
+            writes[spec.name] = value
+            overwrites.append(overwrite_row(label, detection_id, spec.name, current, value))
+    return writes, issues, overwrites
 
 
 def apply_attributes(
@@ -170,26 +223,30 @@ def apply_attributes(
     names: set[str],
     specs: list[FieldSpec],
     dry_run: bool,
-) -> tuple[int, int, list[dict[str, str]]]:
-    """Write planned fields. Returns boxes updated, boxes left unchanged, and issues."""
+) -> tuple[int, int, list[dict[str, str]], list[dict[str, str]]]:
+    """Write planned fields. Returns boxes updated, boxes unchanged, issues, and overwrites."""
     updated = 0
     unchanged = 0
     issues: list[dict[str, str]] = []
+    overwrites: list[dict[str, str]] = []
     for sample in dataset.select(sample_ids).iter_samples(autosave=not dry_run):
         label = sample[label_field] if dataset.has_field(label_field) else None
         detections = list(getattr(label, "detections", None) or [])
         sample_changed = False
+        replaced = False
         for detection in detections:
             if str(detection.label) not in names:
                 continue
-            writes, rows = plan_detection(detection, names, specs)
-            for row in rows:
+            writes, rows, replaced_rows = plan_detection(detection, names, specs)
+            for row in rows + replaced_rows:
                 row["sample_id"] = str(sample.id)
             issues.extend(rows)
+            overwrites.extend(replaced_rows)
             if not writes:
                 unchanged += 1
                 continue
             updated += 1
+            replaced = replaced or bool(replaced_rows)
             if dry_run:
                 continue
             for field_name, value in writes.items():
@@ -197,9 +254,11 @@ def apply_attributes(
             sample_changed = True
         if sample_changed:
             sample[label_field] = label
+            if replaced:
+                sample.tags = append_changed_tag(sample.tags)
     if not dry_run:
         dataset.save()
-    return updated, unchanged, issues
+    return updated, unchanged, issues, overwrites
 
 
 def write_issues(dataset_name: str, issues: list[dict[str, str]]) -> Path:
@@ -208,10 +267,7 @@ def write_issues(dataset_name: str, issues: list[dict[str, str]]) -> Path:
     output = Path.cwd() / "tmp" / f"update_label_attributes_{safe_name}.csv"
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=["issue", "sample_id", "label", "detection_id", "field", "detail"],
-        )
+        writer = csv.DictWriter(handle, fieldnames=list(ISSUE_COLUMNS))
         writer.writeheader()
         writer.writerows(issues)
     return output
@@ -247,7 +303,7 @@ def run(args: argparse.Namespace) -> int:
     sample_ids = [str(sample_id) for sample_id in view.values("id")]
     if not sample_ids:
         raise ValueError("No samples matched --sample-tags.")
-    updated, unchanged, issues = apply_attributes(
+    updated, unchanged, issues, overwrites = apply_attributes(
         dataset,
         sample_ids,
         args.label_field,
@@ -255,7 +311,7 @@ def run(args: argparse.Namespace) -> int:
         args.fields,
         args.dry_run,
     )
-    report = write_issues(args.dataset, issues)
+    report = write_issues(args.dataset, issues + overwrites)
     print_report(
         {
             "mode": "dry-run" if args.dry_run else "update",
@@ -266,6 +322,7 @@ def run(args: argparse.Namespace) -> int:
             "samples": len(sample_ids),
             "updated_boxes": updated,
             "unchanged_boxes": unchanged,
+            "overwritten": len(overwrites),
             "issues": len(issues),
             "csv_path": report,
         }
