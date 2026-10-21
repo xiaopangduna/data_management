@@ -270,6 +270,15 @@ uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/
 uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v007_baby_head/ --split train_v007 --sample-tags train_v007 --classes head-age_0
 uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v007_baby_head/ --split test_v002 --sample-tags test_v002 --classes head-age_0
 
+# 导出v010
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v010_baby_head/ --split train_v010 --sample-tags train_v010 --classes head-age_0
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v010_baby_head/ --split test_v003 --sample-tags test_v003 --classes head-age_0
+
+# 导出v011
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v011_baby_head/ --split train_v011 --sample-tags train_v011 --classes head-age_0
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v011_baby_head/ --split test_v003 --sample-tags test_v003 --classes head-age_0
+
+
 # 导出 v011
 uv run python scripts/export_yolo.py   --dataset BBM08S_head   --out-dir /home/huangwenhua/project/dataset/head/v011_head_age   --split train_v011   --sample-tags train_v011   --classes head-age_0,head-age_1,head-age_2   --dry-run
 
@@ -279,9 +288,9 @@ uv run python scripts/export_yolo.py   --dataset BBM08S_head   --out-dir /home/h
 uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head_body/v021_baby_head_body/ --split train_v003 --sample-tags train_v021 --classes head-age_0,baby_body
 uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head_body/v021_baby_head_body/ --split test_v002 --sample-tags test_v002 --classes head-age_0,baby_body
 
-#导出v101数据集
-uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/eye/v101_eye/ --split train_v101 --sample-tags train_v101 --classes head-eye_open_0,head-eye_open_1,head-eye_open_2
-uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/eye/v101_eye/ --split test_v101 --sample-tags test_v101 --classes head-eye_open_0,head-eye_open_1,head-eye_open_2
+#导出v301数据集
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/eye/v301_eye/ --split train_v301 --sample-tags train_v301 --classes head-eye_open_0,head-eye_open_1,head-eye_open_2
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/eye/v301_eye/ --split test_v301 --sample-tags test_v301 --classes head-eye_open_0,head-eye_open_1,head-eye_open_2
 
 ```
 
