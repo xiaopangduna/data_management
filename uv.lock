@@ -702,7 +702,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fiftyone", specifier = ">=1.22.0" },
+    { name = "fiftyone", specifier = ">=1.22.1" },
     { name = "numpy" },
     { name = "openai", specifier = ">=3.26.0" },
     { name = "opencv-python", specifier = ">=5.0.0.93" },
@@ -757,7 +757,7 @@ wheels = [
 
 [[package]]
 name = "fiftyone"
-version = "1.22.0"
+version = "1.22.1"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -773,6 +773,7 @@ dependencies = [
     { name = "fiftyone-brain" },
     { name = "fiftyone-db" },
     { name = "ftfy" },
+    { name = "graphql-core" },
     { name = "humanize" },
     { name = "hypercorn" },
     { name = "jinja2" },
@@ -810,9 +811,9 @@ dependencies = [
     { name = "voxel51-eta" },
     { name = "xmltodict" },
 ]
-sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/f2/ff/cae17b99e253ef6f96111971f1a4dea222530251ab943dea5b84e231ac1a/fiftyone-1.22.0.tar.gz", hash = "sha256:406f552dab3da1ddc1fded2458f974bf2a50807972adfa6aba49ca6f0605c427", size = 23771910, upload-time = "2026-09-12T02:00:16.708Z" }
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/38/9e/a121ed2b31d32c3d762360279a865ff4ec6c90ee601a8db5412255100714/fiftyone-1.22.1.tar.gz", hash = "sha256:abed3702e78d0e0fef03a38522604c7310745b15e1adfe4ce214ddc3c45bf71e", size = 23772009, upload-time = "2026-09-29T21:43:24.333Z" }
 wheels = [
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/aa/e9/1fd32e9ccc73f4feac99753cd0fc67be1f0458c42758b669600b78166894/fiftyone-1.22.0-py3-none-any.whl", hash = "sha256:c82a231fb9c8d381c21efc1293a6fa3d14f6ed1d03853d6e5b7958bba4ceb75b", size = 24042275, upload-time = "2026-09-12T02:00:13.67Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/0b/a0/4c7b2194d6aaf1e36b1f77b3de7a70e20a4d54bec2ed8240e6386c20366a/fiftyone-1.22.1-py3-none-any.whl", hash = "sha256:a5a216ac6aea97fccee95e583d85ffe0de228c7dcd480bd295d3c8c637d13b3e", size = 24043686, upload-time = "2026-09-29T21:43:20.885Z" },
 ]
 
 [[package]]
@@ -1291,9 +1292,9 @@ source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
 dependencies = [
     { name = "jsonpointer" },
 ]
-sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/42/78/18813351fe5d63acad16aec57f94ec2b70a09e53ca98145589e185423873/jsonpatch-1.33.tar.gz", hash = "sha256:9fcd4009c41e6d12348b4a0ff2563ba56a2923a7dfee731d004e212e1ee5030c" }
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/42/78/18813351fe5d63acad16aec57f94ec2b70a09e53ca98145589e185423873/jsonpatch-1.33.tar.gz", hash = "sha256:9fcd4009c41e6d12348b4a0ff2563ba56a2923a7dfee731d004e212e1ee5030c", size = 21699, upload-time = "2023-06-26T12:07:29.144Z" }
 wheels = [
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/73/07/02e16ed01e04a374e644b575638ec7987ae846d25ad97bcc9945a3ee4b0e/jsonpatch-1.33-py2.py3-none-any.whl", hash = "sha256:0ae28c0cd062bbd8b8ecc26d7d164fbbea9652a1a3693f3b956c1eae5145dade" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/73/07/02e16ed01e04a374e644b575638ec7987ae846d25ad97bcc9945a3ee4b0e/jsonpatch-1.33-py2.py3-none-any.whl", hash = "sha256:0ae28c0cd062bbd8b8ecc26d7d164fbbea9652a1a3693f3b956c1eae5145dade", size = 12898, upload-time = "2023-06-16T21:01:28.466Z" },
 ]
 
 [[package]]
@@ -2835,9 +2836,9 @@ wheels = [
 name = "texttable"
 version = "1.7.0"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
-sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/1c/dc/0aff23d6036a4d3bf4f1d8c8204c5c79c4437e25e0ae94ffe4bbb55ee3c2/texttable-1.7.0.tar.gz", hash = "sha256:2d2068fb55115807d3ac77a4ca68fa48803e84ebb0ee2340f858107a36522638" }
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/1c/dc/0aff23d6036a4d3bf4f1d8c8204c5c79c4437e25e0ae94ffe4bbb55ee3c2/texttable-1.7.0.tar.gz", hash = "sha256:2d2068fb55115807d3ac77a4ca68fa48803e84ebb0ee2340f858107a36522638", size = 12831, upload-time = "2023-10-03T09:48:12.272Z" }
 wheels = [
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/24/99/4772b8e00a136f3e01236de33b0efda31ee7077203ba5967fcc76da94d65/texttable-1.7.0-py2.py3-none-any.whl", hash = "sha256:72227d592c82b3d7f672731ae73e4d1f88cd8e2ef5b075a7a7f01a23a3743917" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/24/99/4772b8e00a136f3e01236de33b0efda31ee7077203ba5967fcc76da94d65/texttable-1.7.0-py2.py3-none-any.whl", hash = "sha256:72227d592c82b3d7f672731ae73e4d1f88cd8e2ef5b075a7a7f01a23a3743917", size = 10768, upload-time = "2023-10-03T09:48:10.434Z" },
 ]
 
 [[package]]
