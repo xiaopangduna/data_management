@@ -2,13 +2,48 @@
 
 用 [FiftyOne](https://docs.voxel51.com) 管深度学习数据：图片留在原目录，路径 / tags / 检测框写入本机数据库（默认 `~/.fiftyone`）。
 
+## 启动fiftyone
+
 ```bash
+# Step 1 : 启动数据库 mongod
+
+# 查看是否有已经启动的数据库
+pgrep -a mongod
+# 启动数据库 port = 27017
+.venv/lib/python3.12/site-packages/fiftyone/db/bin/mongod   --dbpath "$HOME/.fiftyone/var/lib/mongo"   --logpath "$HOME/.fiftyone/var/lib/mongo/log/mongo.log"   --port 27017  --nounixsocket   --fork
+
+# Step 2 : 启动fiftyone
+# (注:fiftyone会自动启动数据库，但是一般还是手动启动数据库更好，避免修改的数据库和连接的数据库不一致)
+export FIFTYONE_DATABASE_URI=mongodb://127.0.0.1:27017
 cd data_management
 uv sync   # Python >= 3.12
+# 查看数据库中存在的 数据集名称
 uv run fiftyone datasets list
+# 本地启动fiftyone
 uv run fiftyone app launch <dataset>
+# 本地启动fiftyone并开放端口
 uv run fiftyone app launch BBM08S_head --address 0.0.0.0 --port 5151
 
+# Step 3 : 备份数据库（需先启动数据库）
+# 安装 mongodump 备份数据库的工具
+cd /tmp
+curl -fL -o mongodb-database-tools.deb \
+  https://fastdl.mongodb.org/tools/db/mongodb-database-tools-ubuntu2404-x86_64-100.18.0.deb
+sudo apt install -y ./mongodb-database-tools.deb
+mongodump --version
+# mongodump 备份数据库
+mkdir -p /home/huangwenhua/project/backup/fiftyone/
+export FIFTYONE_DATABASE_URI=mongodb://127.0.0.1:27017
+mongodump --uri="$FIFTYONE_DATABASE_URI" --db=fiftyone --gzip --archive="/home/huangwenhua/project/backup/fiftyone/fiftyone_$(date +%Y%m%d).archive.gz"
+
+# Step 4 : 恢复数据库（需先启动数据库）
+export FIFTYONE_DATABASE_URI=mongodb://127.0.0.1:27017
+mongorestore   --uri="mongodb://127.0.0.1:27017"   --gzip   --archive="$HOME/project/backup/fiftyone/fiftyone_20260916.archive.gz"
+mongorestore   --uri="mongodb://127.0.0.1:27017"   --gzip   --archive="$HOME/project/backup/fiftyone/fiftyone_20260924.archive.gz" --drop --verbose 2>&1 | tee restore.log
+
+```
+
+```bash
 export CVAT_HOST=192.168.101.118
 docker compose down
 docker compose up -d
@@ -30,34 +65,6 @@ uv run python scripts/cvat_load.py --dataset BBM08S_head --anno-key cvat_head_26
 
 xanylable中的label falgs接近 fiftyone的label tags，label falgs是true/false，
 attribute接近字段，是选择字段，多个选项
-# 备份
-cd /tmp
-curl -fL -o mongodb-database-tools.deb \
-  https://fastdl.mongodb.org/tools/db/mongodb-database-tools-ubuntu2404-x86_64-100.18.0.deb
-sudo apt install -y ./mongodb-database-tools.deb
-mongodump --version
-
-# 恢复
-启动数据库
-.venv/lib/python3.12/site-packages/fiftyone/db/bin/mongod   --dbpath "$HOME/.fiftyone/var/lib/mongo"   --logpath "$HOME/.fiftyone/var/lib/mongo/log/mongo.log"   --port 27017  --nounixsocket   --fork
-恢复数据库
-mongorestore   --uri="mongodb://127.0.0.1:27017"   --gzip   --archive="$HOME/project/backup/fiftyone/fiftyone_20260916.archive.gz"
-
-mongorestore   --uri="mongodb://127.0.0.1:27017"   --gzip   --archive="$HOME/project/backup/fiftyone/fiftyone_20260924.archive.gz" --drop --verbose 2>&1 | tee restore.log
-
-# 查看mongod是否运行
-pgrep -a mongod
-
-.venv/lib/python3.12/site-packages/fiftyone/db/bin/mongod --dbpath /home/lee/huangwenhua/.fiftyone/mongo --port 27017 --fork --logpath /home/lee/huangwenhua/.fiftyone/mongod.log
-pgrep -af 'mongod.*27017'
-export FIFTYONE_DATABASE_URI=mongodb://127.0.0.1:27017
-# 备份
-mkdir -p /home/huangwenhua/project/backup/fiftyone/
-mongodump --uri="$FIFTYONE_DATABASE_URI" --db=fiftyone --gzip --archive="/home/huangwenhua/project/backup/fiftyone/fiftyone_$(date +%Y%m%d).archive.gz"
-
-# 恢复（会覆盖当前库）
-# mongorestore --uri="$FIFTYONE_DATABASE_URI" --gzip \
-#   --archive=/mnt/nvme_data/backup/fiftyone/fiftyone_20260910.archive.gz --drop
 
 ```
 
@@ -78,8 +85,6 @@ tags 填多个，例如 ["train", "big_face"]
 ```
 导入 → 补哈希/尺寸 → 去重 → 导出标注 → 写回标注 → 导出 YOLO 训练
 ```
-
-
 
 ### Step 1：导入 FiftyOne
 
