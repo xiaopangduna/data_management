@@ -11,6 +11,7 @@
 pgrep -a mongod
 # 启动数据库 port = 27017
 .venv/lib/python3.12/site-packages/fiftyone/db/bin/mongod   --dbpath "$HOME/.fiftyone/var/lib/mongo"   --logpath "$HOME/.fiftyone/var/lib/mongo/log/mongo.log"   --port 27017  --nounixsocket   --fork
+export FIFTYONE_DATABASE_URI=mongodb://127.0.0.1:27017
 
 # Step 2 : 启动fiftyone
 # (注:fiftyone会自动启动数据库，但是一般还是手动启动数据库更好，避免修改的数据库和连接的数据库不一致)
@@ -67,8 +68,6 @@ xanylable中的label falgs接近 fiftyone的label tags，label falgs是true/fals
 attribute接近字段，是选择字段，多个选项
 
 ```
-
-
 
 # app用法
 
@@ -274,9 +273,18 @@ uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/
 uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v007_baby_head/ --split train_v007 --sample-tags train_v007 --classes head-age_0
 uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v007_baby_head/ --split test_v002 --sample-tags test_v002 --classes head-age_0
 
-# 导出v010
+#导出v008数据集
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v008_baby_head/ --split train_v008 --sample-tags train_v008 --classes head-age_0
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v008_baby_head/ --split test_v002 --sample-tags test_v002 --classes head-age_0
+
+#导出v009数据集
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v009_baby_head/ --split train_v009 --sample-tags train_v009 --classes head-age_0
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v009_baby_head/ --split test_v002 --sample-tags test_v002 --classes head-age_0
+
+#导出v010数据集
 uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v010_baby_head/ --split train_v010 --sample-tags train_v010 --classes head-age_0
-uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v010_baby_head/ --split test_v003 --sample-tags test_v003 --classes head-age_0
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v010_baby_head/ --split test_v002 --sample-tags test_v002 --classes head-age_0
+
 
 # 导出v011
 uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/head/v011_baby_head/ --split train_v011 --sample-tags train_v011 --classes head-age_0
@@ -410,8 +418,8 @@ uv run python scripts/update_tags.py \
 
 默认只扫描当前层；包含子目录时加 `--recursive`。确认统计后去掉 `--dry-run` 正式写库。相同内容的多份输入图片只更新对应样本一次；同一哈希对应多个库内样本时跳过。未匹配图片、读取失败、库内缺少哈希及多样本匹配记录到 `tmp/update_tags_<数据集>.csv`（每次运行覆盖，预览也会生成）。整库缺少 `sha256` 字段时直接报错，提示先补哈希。
 
-
 # cvat联动
+
 http://localhost:8080
 可通过字段，与fiftyonbe和cvat标注
 fifityone发布
@@ -422,32 +430,32 @@ fiftyone收回
 
 http://192.168.101.118:8080
 
-uv run python scripts/update_label_attributes.py \
-  --dataset BBM08S_head \
-  --sample-tags pred_v121_bad \
-  --classes head \
-  --fields age:0-2 \
+uv run python scripts/update_label_attributes.py   
+  --dataset BBM08S_head   
+  --sample-tags pred_v121_bad   
+  --classes head   
+  --fields age:0-2   
   --dry-run
 
-uv run python scripts/cvat.py \
-  --dataset BBM08S_head \
-  --sample-tags pred_v121_bad \
-  --classes head \
-  --attributes age=0,1,2 \
-  --anno-key cvat_head_261013 \
-  --project-name BBM08S_head_age \
+uv run python scripts/cvat.py   
+  --dataset BBM08S_head   
+  --sample-tags pred_v121_bad   
+  --classes head   
+  --attributes age=0,1,2   
+  --anno-key cvat_head_261013   
+  --project-name BBM08S_head_age   
   --dry-run
 
-uv run python scripts/cvat_load.py \
-  --dataset BBM08S_head \
-  --anno-key cvat_head_261013 \
-  --classes head \
-  --sample-tags label_cvat_261013 \
+uv run python scripts/cvat_load.py   
+  --dataset BBM08S_head   
+  --anno-key cvat_head_261013   
+  --classes head   
+  --sample-tags label_cvat_261013   
   --dry-run
 
-uv run python scripts/update_tags_from_attributes.py \
-  --dataset BBM08S_head \
-  --sample-tags cvat_head_age_261013 \
-  --classes head \
-  --fields age:0-2 \
+uv run python scripts/update_tags_from_attributes.py   
+  --dataset BBM08S_head   
+  --sample-tags cvat_head_age_261013   
+  --classes head   
+  --fields age:0-2   
   --dry-run
