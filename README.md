@@ -33,8 +33,10 @@ curl -fL -o mongodb-database-tools.deb \
 sudo apt install -y ./mongodb-database-tools.deb
 mongodump --version
 # mongodump 备份数据库
-mkdir -p /home/huangwenhua/project/backup/fiftyone/
+# 先关掉正在看 patches 的 App，再删非持久临时库（fo.list_datasets 列不出来）
 export FIFTYONE_DATABASE_URI=mongodb://127.0.0.1:27017
+uv run python -c "import fiftyone as fo; fo.delete_non_persistent_datasets(verbose=True)"
+mkdir -p /home/huangwenhua/project/backup/fiftyone/
 mongodump --uri="$FIFTYONE_DATABASE_URI" --db=fiftyone --gzip --archive="/home/huangwenhua/project/backup/fiftyone/fiftyone_$(date +%Y%m%d).archive.gz"
 
 # Step 4 : 恢复数据库（需先启动数据库）
@@ -43,31 +45,60 @@ mongorestore   --uri="mongodb://127.0.0.1:27017"   --gzip   --archive="$HOME/pro
 mongorestore   --uri="mongodb://127.0.0.1:27017"   --gzip   --archive="$HOME/project/backup/fiftyone/fiftyone_20260924.archive.gz" --drop --verbose 2>&1 | tee restore.log
 
 ```
+# FiftyOne + CVAT
+
+页面：http://192.168.101.118:8080  http://localhost:8080。`cvat_server`、`cvat_ui`、`traefik`、`nuclio` 和检测函数都是 `restart=always`。机器重启后只要 Docker 会自启，不用再拉。执行过 `docker compose down` 才需要下面的启动命令。
+
+## 启动 CVAT
+
+在 `src/cvat` 里执行。`.env` 里的 `CVAT_HOST` 必须是浏览器地址里的主机名，否则用 IP 打开是 404。不要只跑 `docker compose up`，那样没有 Nuclio，主机名也会回到 `localhost`。
 
 ```bash
-export CVAT_HOST=192.168.101.118
-docker compose down
-docker compose up -d
-绿
-#166534
-#86efac
-橙
-#9a3412
-#fdba74
-蓝
-#1e3a8a
-#93c5fd
-紫
-#6b21a8
-#d8b4fe
-
-uv run python scripts/cvat.py --dataset BBM08S_head --sample-tags relabel --anno-key cvat_head_261012 --classes baby_head,adult_head --dry-run
-uv run python scripts/cvat_load.py --dataset BBM08S_head --anno-key cvat_head_261012 --classes baby_head,adult_head --sample-tags label_cvat_261012 --dry-run 
-
-xanylable中的label falgs接近 fiftyone的label tags，label falgs是true/false，
-attribute接近字段，是选择字段，多个选项
-
+cd /home/huangwenhua/project/2026_09_baby_monitor_08S/src/cvat
+printf 'CVAT_HOST=192.168.101.118\n' > .env
+docker compose -f docker-compose.yml -f components/serverless/docker-compose.serverless.yml up -d
 ```
+
+## 导出已有框
+
+在 `data_management` 里执行。只上传 `--classes` 里已有的框，其它类别留在 FiftyOne。`--anno-key` 不能重复。成功后样本打上 `cvat_<anno-key>`。
+
+```bash
+export FIFTYONE_CVAT_URL='http://192.168.101.118:8080'
+export FIFTYONE_CVAT_USERNAME='...'
+export FIFTYONE_CVAT_PASSWORD='...'
+
+uv run python scripts/export_cvat.py \
+  --dataset BBM08S_head \
+  --sample-tags relabel_head \
+  --anno-key cvat_head_261028 \
+  --classes head \
+  --dry-run
+```
+
+去掉 `--dry-run` 后才会上传。一批图会按 800 MB、512 张切成多个任务，CVAT 里的名字是 `cvat_head_261028`、`cvat_head_261028_1`、`cvat_head_261028_2`。
+
+## CVAT 预标注
+
+打开每个任务，选 **Actions → Automatic annotation**，模型选 **Head v009**。它加载单通道权重 `body_head_face/runs/detect/20261027_head_v009_v8n/weights/best.pt`，输出 `head-age_0` 和 `head-age_2`。阈值用 **0.25**。任务里只有标签 `head` 时，两个类别都只能映射到 `head`，年龄会丢掉；要保留年龄，项目里先加上这两个标签再做对应。勾选 **Clean old annotations** 会清掉刚从 FiftyOne 传上去的框。
+
+**Region of interest** 留空表示整张图都检测。填了 `x`、`y`、`width`、`height` 就只检测这块像素区域。这一批图的宽高必须相同，区域也必须落在每一张图里。
+
+标完后用同一个 `--anno-key` 写回。只替换 `--classes`。已有框改位置，删掉的框删掉，新框加上。不传 `--attributes` 时，配对上的框保留原来的字段和 label tags。
+
+在 `data_management` 里执行，不要在 `src/cvat` 里跑。
+
+```bash
+cd /home/huangwenhua/project/2026_09_baby_monitor_08S/src/data_management
+uv run python scripts/update_cvat_labels.py \
+  --dataset BBM08S_head \
+  --anno-key cvat_head_261028 \
+  --classes head \
+  --sample-tags label_cvat_261028 \
+  --dry-run
+```
+
+X-AnyLabeling 的 label flags 是布尔值，对应 FiftyOne 的 label tags。attribute 是带多个选项的选择字段。
 
 # app用法
 
@@ -152,7 +183,7 @@ uv run python scripts/export_xlabel.py \
 
 不经过 FiftyOne、只把 YOLO txt 转成 X-AnyLabeling JSON：`scripts/convert_yolo_to_xlabel.py`。
 
-### 发布到 CVAT
+### 导出到 CVAT
 
 按 sample tags 选出要改的图，把 `--classes` 里已有的框发到 CVAT。其它类别留在库里，不上传。CVAT 单次上传不能超过 1 GB，并且一个请求里每张图都会占一个打开的文件。脚本按文件大小和张数把这一批切成多个任务，每个任务控制在 800 MB、512 张以内。这些任务共用一个项目和一个 `--anno-key`；多于一个任务时，CVAT 里的名字是 `<anno-key>_1`、`<anno-key>_2`。`--project-name` 默认等于 `--dataset`，项目里的类别必须和 `--classes` 一致。`--anno-key` 不能重复，成功后样本会打上 `cvat_<anno-key>`。
 
@@ -165,7 +196,7 @@ export FIFTYONE_CVAT_PASSWORD='...'
 ```
 
 ```bash
-uv run python scripts/cvat.py \
+uv run python scripts/export_cvat.py \
   --dataset BBM08S_head \
   --sample-tags relabel \
   --anno-key cvat_head_261012 \
@@ -176,7 +207,7 @@ uv run python scripts/cvat.py \
 去掉 `--dry-run` 后才会上传。标完后用同一个 `--anno-key` 写回：只替换 `--classes`。框有变化，或这次任务带上的字段（例如 `age`）变了，样本追加 `--sample-tags` 和 `changed`。同一类别的框按位置互相配对，不按排序顺序硬比。有图像宽高时，每条边移动不超过 5 像素视为未改，用来忽略 CVAT 的像素取整。框的数量变了仍然算改过。配对上的框会保留原来的 `age_*` 这类 tag，方便下一步用字段覆盖。
 
 ```bash
-uv run python scripts/cvat_load.py \
+uv run python scripts/update_cvat_labels.py \
   --dataset BBM08S_head \
   --anno-key cvat_head_261012 \
   --classes baby_head,adult_head \
@@ -184,7 +215,7 @@ uv run python scripts/cvat_load.py \
   --dry-run
 ```
 
-框上的 `age_0` 这类 tag 不会随发布送进 CVAT。要让人在 CVAT 里改年龄，先把 tag 抄成字段，再用新的 `--project-name` 发布。旧项目里没有这个字段，不能复用。`age:0-2` 表示字段 `age` 取值 `0`、`1`、`2`，对应 tag `age_0`、`age_1`、`age_2`。多个 `age_*` 取最大的数字；没有则写成 `0`。超出范围的 tag 记在 CSV 里，该字段不写。原来的 tag 先留着。
+框上的 `age_0` 这类 tag 不会随导出送进 CVAT。要让人在 CVAT 里改年龄，先把 tag 抄成字段，再用新的 `--project-name` 导出。旧项目里没有这个字段，不能复用。`age:0-2` 表示字段 `age` 取值 `0`、`1`、`2`，对应 tag `age_0`、`age_1`、`age_2`。多个 `age_*` 取最大的数字；没有则写成 `0`。超出范围的 tag 记在 CSV 里，该字段不写。原来的 tag 先留着。
 
 ```bash
 uv run python scripts/update_label_attributes.py \
@@ -196,7 +227,7 @@ uv run python scripts/update_label_attributes.py \
 ```
 
 ```bash
-uv run python scripts/cvat.py \
+uv run python scripts/export_cvat.py \
   --dataset BBM08S_head \
   --sample-tags pred_v121_bad \
   --classes head \
@@ -206,7 +237,7 @@ uv run python scripts/cvat.py \
   --dry-run
 ```
 
-标完后用同一个 `--anno-key` 跑 `cvat_load.py` 写回框。框变了或 `age` 变了都会打上 `changed`。再用字段覆盖 `age_*` tag，其它 tag 不动。`--sample-tags` 选出要处理的图，字段和原来的 tag 不一致时打上 `changed`。YOLO 导出读的是这些 tag。
+标完后用同一个 `--anno-key` 跑 `update_cvat_labels.py` 写回框。框变了或 `age` 变了都会打上 `changed`。再用字段覆盖 `age_*` tag，其它 tag 不动。`--sample-tags` 选出要处理的图，字段和原来的 tag 不一致时打上 `changed`。YOLO 导出读的是这些 tag。
 
 ```bash
 uv run python scripts/update_tags_from_attributes.py \
@@ -319,7 +350,7 @@ uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/
 - **Sample tags**（选图、排队、整图质量）：
   - 来源 / split：`head`、`train`、`val`、`test`、`train_bed` 等。导入时打上，导出 YOLO 按它们选图。
   - 工作队列：`relabel`、`review`。App 或 `update_tags.py` 打上，导出 X-AnyLabeling 或发布 CVAT 按它们选图。
-  - CVAT 批次：`cvat_<anno-key>`。`cvat.py` 发布成功后打上，表示这张图已在该次任务里。
+  - CVAT 批次：`cvat_<anno-key>`。`export_cvat.py` 导出成功后打上，表示这张图已在该次任务里。
   - 整图去重：`dup_*`。只描述这张图要不要进训练/复核。
   - 写回批次：`label_*`、`changed`、`xlabel_checked`。X-AnyLabeling 的 `checked` 按图；写回按 `--classes` 整图替换那几类框；`changed` 表示这张图被这批 JSON 改过。
 - 命名：无前缀来源 / split / 队列；`dup_*` 去重；`label_*` 写回批次。
@@ -338,7 +369,7 @@ scripts/
   check_image_dupes.py
   export_xlabel.py / export_yolo.py
   convert_yolo_to_xlabel.py
-  cvat.py / cvat_load.py
+  export_cvat.py / update_cvat_labels.py
   update_label_attributes.py / update_tags_from_attributes.py
   extract_by_name.py
 ```
@@ -437,7 +468,7 @@ uv run python scripts/update_label_attributes.py
   --fields age:0-2   
   --dry-run
 
-uv run python scripts/cvat.py   
+uv run python scripts/export_cvat.py   
   --dataset BBM08S_head   
   --sample-tags pred_v121_bad   
   --classes head   
@@ -446,7 +477,7 @@ uv run python scripts/cvat.py
   --project-name BBM08S_head_age   
   --dry-run
 
-uv run python scripts/cvat_load.py   
+uv run python scripts/update_cvat_labels.py   
   --dataset BBM08S_head   
   --anno-key cvat_head_261013   
   --classes head   

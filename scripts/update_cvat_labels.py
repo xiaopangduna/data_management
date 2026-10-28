@@ -1,9 +1,9 @@
-"""Load a CVAT annotation run and replace only the requested classes.
+"""Update FiftyOne labels from a CVAT annotation run, replacing only the requested classes.
 
 Boxes whose labels are outside ``--classes`` are restored from the dataset
 snapshot taken before the download. Samples whose requested boxes or CVAT
 attribute values changed gain ``--sample-tags`` and ``changed``. The
-``cvat_<anno-key>`` tag from publish is left in place.
+``cvat_<anno-key>`` tag from export is left in place.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ def name_list(value: str) -> list[str]:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parse CLI arguments for loading a CVAT run."""
+    """Parse CLI arguments for writing a CVAT run back into FiftyOne."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", required=True, type=nonempty)
     parser.add_argument("--anno-key", required=True, type=nonempty)
@@ -328,7 +328,7 @@ def apply_load(
 
 
 def run(args: argparse.Namespace) -> int:
-    """Download one annotation run and merge the requested classes."""
+    """Download one annotation run and merge the requested classes into FiftyOne."""
     if not fo.dataset_exists(args.dataset):
         raise ValueError(f"Dataset does not exist: {args.dataset}")
     dataset = fo.load_dataset(args.dataset)
@@ -343,7 +343,7 @@ def run(args: argparse.Namespace) -> int:
         raise ValueError(f"Annotation run '{args.anno_key}' has no samples.")
     print_report(
         {
-            "mode": "dry-run" if args.dry_run else "load",
+            "mode": "dry-run" if args.dry_run else "update",
             "dataset": args.dataset,
             "anno_key": args.anno_key,
             "label_field": label_field,
@@ -378,12 +378,12 @@ def run(args: argparse.Namespace) -> int:
         args.sample_tags,
         attribute_names,
     )
-    print_report({"changed": changed, "unchanged": unchanged, "loaded": "true"})
+    print_report({"changed": changed, "unchanged": unchanged, "updated": "true"})
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Load CVAT annotations back into an existing dataset."""
+    """Write CVAT annotations back into an existing dataset."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     args = parse_args(argv)
     try:

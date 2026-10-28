@@ -1,4 +1,4 @@
-"""CVAT publish selection and class-scoped load."""
+"""CVAT export selection and class-scoped label update."""
 import importlib.util
 import sys
 from pathlib import Path
@@ -19,12 +19,12 @@ def load_script(name: str):
     return module
 
 
-cvat = load_script("cvat")
-cvat_load = load_script("cvat_load")
+export_cvat = load_script("export_cvat")
+update_cvat = load_script("update_cvat_labels")
 
 
 def test_publish_cli_requires_core_options():
-    args = cvat.parse_args(
+    args = export_cvat.parse_args(
         [
             "--dataset", "BBM08S_head",
             "--sample-tags", "relabel,train",
@@ -37,12 +37,12 @@ def test_publish_cli_requires_core_options():
     assert args.project_name is None
     assert args.label_field == "ground_truth"
     assert not args.dry_run
-    assert cvat.resolve_project_name(args.dataset, args.project_name) == "BBM08S_head"
-    assert cvat.pending_tag(args.anno_key) == "cvat_cvat_head_261012"
+    assert export_cvat.resolve_project_name(args.dataset, args.project_name) == "BBM08S_head"
+    assert export_cvat.pending_tag(args.anno_key) == "cvat_cvat_head_261012"
     with pytest.raises(SystemExit):
-        cvat.parse_args(["--dataset", "BBM08S_head", "--sample-tags", "relabel", "--anno-key", "ok"])
+        export_cvat.parse_args(["--dataset", "BBM08S_head", "--sample-tags", "relabel", "--anno-key", "ok"])
     with pytest.raises(SystemExit):
-        cvat.parse_args(
+        export_cvat.parse_args(
             [
                 "--dataset", "BBM08S_head",
                 "--sample-tags", "relabel",
@@ -53,24 +53,24 @@ def test_publish_cli_requires_core_options():
 
 
 def test_task_size_stays_within_upload_budget():
-    assert cvat.task_size_for_budget([100, 100, 100], budget=250) == 2
-    assert cvat.task_count(3, 2) == 2
-    assert cvat.task_size_for_budget([800, 100, 800], budget=900) == 2
-    assert cvat.task_size_for_budget([10, 10, 10], budget=100) == 3
-    assert cvat.task_size_for_budget([10] * 10, budget=10_000, max_files=4) == 4
+    assert export_cvat.task_size_for_budget([100, 100, 100], budget=250) == 2
+    assert export_cvat.task_count(3, 2) == 2
+    assert export_cvat.task_size_for_budget([800, 100, 800], budget=900) == 2
+    assert export_cvat.task_size_for_budget([10, 10, 10], budget=100) == 3
+    assert export_cvat.task_size_for_budget([10] * 10, budget=10_000, max_files=4) == 4
     with pytest.raises(ValueError, match="above the 50 byte"):
-        cvat.task_size_for_budget([80, 10], budget=50)
+        export_cvat.task_size_for_budget([80, 10], budget=50)
 
 
 def test_project_classes_must_match_when_project_exists():
-    cvat.ensure_project_classes(None, ["baby_head"])
-    cvat.ensure_project_classes({"adult_head", "baby_head"}, ["baby_head", "adult_head"])
+    export_cvat.ensure_project_classes(None, ["baby_head"])
+    export_cvat.ensure_project_classes({"adult_head", "baby_head"}, ["baby_head", "adult_head"])
     with pytest.raises(ValueError, match="differ from --classes"):
-        cvat.ensure_project_classes({"baby_head", "person"}, ["baby_head"])
+        export_cvat.ensure_project_classes({"baby_head", "person"}, ["baby_head"])
 
 
 def test_select_attribute_becomes_a_dropdown():
-    args = cvat.parse_args(
+    args = export_cvat.parse_args(
         [
             "--dataset", "coco2017",
             "--sample-tags", "relabel",
@@ -79,12 +79,12 @@ def test_select_attribute_becomes_a_dropdown():
             "--attributes", "age=age_0,age_2,age_0",
         ]
     )
-    schema = cvat.attribute_schema(args.attributes)
+    schema = export_cvat.attribute_schema(args.attributes)
     assert schema == {
         "age": {"type": "select", "values": ["age_0", "age_2"], "mutable": True},
     }
     with pytest.raises(SystemExit):
-        cvat.parse_args(
+        export_cvat.parse_args(
             [
                 "--dataset", "coco2017",
                 "--sample-tags", "relabel",
@@ -94,17 +94,17 @@ def test_select_attribute_becomes_a_dropdown():
             ]
         )
     with pytest.raises(ValueError, match="Duplicate attribute"):
-        cvat.attribute_schema([
+        export_cvat.attribute_schema([
             ("age", {"type": "select", "values": ["age_0"], "mutable": True}),
             ("age", {"type": "select", "values": ["age_2"], "mutable": True}),
         ])
 
 
 def test_existing_project_must_already_have_requested_attributes():
-    cvat.ensure_project_attributes(None, ["person"], {"age": {}})
-    cvat.ensure_project_attributes({"person": {"age"}}, ["person"], {"age": {}})
+    export_cvat.ensure_project_attributes(None, ["person"], {"age": {}})
+    export_cvat.ensure_project_attributes({"person": {"age"}}, ["person"], {"age": {}})
     with pytest.raises(ValueError, match="missing attributes"):
-        cvat.ensure_project_attributes({"person": set()}, ["person"], {"age": {}})
+        export_cvat.ensure_project_attributes({"person": set()}, ["person"], {"age": {}})
 
 
 def test_select_view_keeps_samples_with_every_tag(tmp_path):
@@ -124,7 +124,7 @@ def test_select_view_keeps_samples_with_every_tag(tmp_path):
         add("keep.jpg", ["relabel", "train"])
         add("partial.jpg", ["relabel"])
         add("also.jpg", ["relabel", "train", "dup_repeat_drop"])
-        view = cvat.select_view(dataset, ["relabel", "train"])
+        view = export_cvat.select_view(dataset, ["relabel", "train"])
         assert len(view) == 2
     finally:
         dataset.delete()
@@ -142,7 +142,7 @@ def test_dry_run_prints_plan_without_tagging(tmp_path, capsys):
             fo.Sample(filepath=str(path), tags=["relabel"], ground_truth=fo.Detections())
         )
         dataset.persistent = True
-        args = cvat.parse_args(
+        args = export_cvat.parse_args(
             [
                 "--dataset", dataset_name,
                 "--sample-tags", "relabel",
@@ -151,7 +151,7 @@ def test_dry_run_prints_plan_without_tagging(tmp_path, capsys):
                 "--dry-run",
             ]
         )
-        assert cvat.run(args) == 0
+        assert export_cvat.run(args) == 0
         output = capsys.readouterr().out
         assert "mode=dry-run" in output
         assert "samples=1" in output
@@ -174,19 +174,19 @@ def test_load_merges_only_requested_classes():
         fo.Detection(label="baby_head", bounding_box=[0.6, 0.6, 0.2, 0.2]),
         fo.Detection(label="person", bounding_box=[0.0, 0.0, 0.1, 0.1]),
     ])
-    merged = cvat_load.merge_class_detections(before, after, names)
+    merged = update_cvat.merge_class_detections(before, after, names)
     by_label = {detection.label: detection.bounding_box for detection in merged.detections}
     assert set(by_label) == {"adult_head", "baby_head"}
     assert by_label["adult_head"] == [0.1, 0.1, 0.2, 0.2]
     assert by_label["baby_head"] == [0.6, 0.6, 0.2, 0.2]
-    assert cvat_load.boxes_changed(before, merged, names, frame_size=(1000, 1000))
+    assert update_cvat.boxes_changed(before, merged, names, frame_size=(1000, 1000))
     jitter = fo.Detections(detections=[
         fo.Detection(label="baby_head", bounding_box=[0.202, 0.2, 0.2, 0.2]),
     ])
     original = fo.Detections(detections=[
         fo.Detection(label="baby_head", bounding_box=[0.2, 0.2, 0.2, 0.2]),
     ])
-    assert not cvat_load.boxes_changed(original, jitter, names, frame_size=(1000, 1000))
+    assert not update_cvat.boxes_changed(original, jitter, names, frame_size=(1000, 1000))
     swapped = fo.Detections(detections=[
         fo.Detection(label="baby_head", bounding_box=[0.055, 0.05, 0.1, 0.1]),
         fo.Detection(label="baby_head", bounding_box=[0.05, 0.20, 0.1, 0.1]),
@@ -195,12 +195,12 @@ def test_load_merges_only_requested_classes():
         fo.Detection(label="baby_head", bounding_box=[0.05, 0.05, 0.1, 0.1]),
         fo.Detection(label="baby_head", bounding_box=[0.06, 0.20, 0.1, 0.1]),
     ])
-    assert not cvat_load.boxes_changed(ordered, swapped, names, frame_size=(200, 200))
+    assert not update_cvat.boxes_changed(ordered, swapped, names, frame_size=(200, 200))
     moved = fo.Detections(detections=[
         fo.Detection(label="baby_head", bounding_box=[0.5, 0.5, 0.2, 0.2]),
     ])
-    assert cvat_load.boxes_changed(original, moved, names, frame_size=(200, 200))
-    assert cvat_load.append_changed_tags(["relabel", "changed"], ["label_cvat_261012"]) == [
+    assert update_cvat.boxes_changed(original, moved, names, frame_size=(200, 200))
+    assert update_cvat.append_changed_tags(["relabel", "changed"], ["label_cvat_261012"]) == [
         "relabel",
         "changed",
         "label_cvat_261012",
@@ -227,7 +227,7 @@ def test_apply_load_tags_changed_samples(tmp_path):
             fo.Detection(label="baby_head", bounding_box=[0.4, 0.4, 0.2, 0.2]),
         ])
         dataset[sample_id].save()
-        changed, unchanged = cvat_load.apply_load(
+        changed, unchanged = update_cvat.apply_load(
             dataset,
             [sample_id],
             {sample_id: previous},
@@ -264,7 +264,7 @@ def test_age_edit_counts_as_changed(tmp_path):
         edited.set_attribute_value("age", "1")
         sample.ground_truth = fo.Detections(detections=[edited])
         sample.save()
-        changed, unchanged = cvat_load.apply_load(
+        changed, unchanged = update_cvat.apply_load(
             dataset,
             [sample_id],
             {sample_id: previous},
@@ -290,22 +290,22 @@ def test_same_age_is_not_changed():
     after_box.set_attribute_value("age", "1")
     before = fo.Detections(detections=[before_box])
     after = fo.Detections(detections=[after_box])
-    assert not cvat_load.boxes_changed(before, after, {"head"}, frame_size=(1000, 1000), attribute_names=["age"])
+    assert not update_cvat.boxes_changed(before, after, {"head"}, frame_size=(1000, 1000), attribute_names=["age"])
     info = SimpleNamespace(config=SimpleNamespace(label_schema={
         "ground_truth": {"type": "detections", "attributes": {"age": {"type": "select", "values": ["0", "1", "2"]}}},
     }))
-    assert cvat_load.attribute_names_from_run(info) == ["age"]
+    assert update_cvat.attribute_names_from_run(info) == ["age"]
 
 
 def test_label_field_comes_from_the_run():
     info = SimpleNamespace(config=SimpleNamespace(label_schema={"ground_truth": {}}))
-    assert cvat_load.label_field_from_run(info) == "ground_truth"
+    assert update_cvat.label_field_from_run(info) == "ground_truth"
     with pytest.raises(ValueError, match="exactly one"):
-        cvat_load.label_field_from_run(SimpleNamespace(config=SimpleNamespace(label_schema={})))
+        update_cvat.label_field_from_run(SimpleNamespace(config=SimpleNamespace(label_schema={})))
 
 
 def test_load_cli_requires_writeback_tags():
-    args = cvat_load.parse_args(
+    args = update_cvat.parse_args(
         [
             "--dataset", "BBM08S_head",
             "--anno-key", "cvat_head_261012",

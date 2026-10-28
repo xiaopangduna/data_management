@@ -1,4 +1,4 @@
-"""Publish existing detections to CVAT so people can correct them.
+"""Export existing detections to CVAT so people can correct them.
 
 Selects samples by sample tags, uploads the current ``--label-field`` boxes for
 ``--classes``, and records the run under ``--anno-key``. Other classes stay in
@@ -78,7 +78,7 @@ def attribute_schema(items: list[tuple[str, dict]]) -> dict[str, dict]:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parse CLI arguments for a CVAT publish run."""
+    """Parse CLI arguments for a CVAT export run."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", required=True, type=nonempty)
     parser.add_argument(
@@ -109,7 +109,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--label-field",
         default=DEFAULT_LABEL_FIELD,
         type=nonempty,
-        help=f"Detections field to publish (default: {DEFAULT_LABEL_FIELD}).",
+        help=f"Detections field to export (default: {DEFAULT_LABEL_FIELD}).",
     )
     parser.add_argument(
         "--attributes",
@@ -127,7 +127,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def pending_tag(anno_key_value: str) -> str:
-    """Return the sample tag that marks a published annotation run."""
+    """Return the sample tag that marks an exported annotation run."""
     return f"cvat_{anno_key_value}"
 
 
@@ -140,7 +140,7 @@ def ensure_project_classes(existing: set[str] | None, requested: list[str]) -> N
     """Require an existing CVAT project to already use exactly ``requested``.
 
     FiftyOne adopts the existing project's labels and ignores ``--classes`` on
-    later uploads. Matching here keeps each publish limited to the requested labels.
+    later uploads. Matching here keeps each export limited to the requested labels.
     """
     if existing is None or existing == set(requested):
         return
@@ -334,7 +334,7 @@ def print_report(values: dict[str, object]) -> None:
 
 
 def run(args: argparse.Namespace) -> int:
-    """Select samples and upload them to CVAT."""
+    """Select samples and export them to CVAT."""
     if not fo.dataset_exists(args.dataset):
         raise ValueError(f"Dataset does not exist: {args.dataset}")
     dataset = fo.load_dataset(args.dataset)
@@ -355,7 +355,7 @@ def run(args: argparse.Namespace) -> int:
     tasks = task_count(selected, task_size)
     print_report(
         {
-            "mode": "dry-run" if args.dry_run else "publish",
+            "mode": "dry-run" if args.dry_run else "export",
             "dataset": args.dataset,
             "sample_tags": ",".join(args.sample_tags),
             "classes": ",".join(args.classes),
@@ -404,7 +404,7 @@ def run(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Publish a tagged slice of a dataset to CVAT."""
+    """Export a tagged slice of a dataset to CVAT."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     args = parse_args(argv)
     try:
