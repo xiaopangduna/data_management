@@ -1,6 +1,6 @@
 """Copy label tags such as ``age_2`` onto detection fields.
 
-``--fields age:0-2`` writes field ``age`` with values ``0``, ``1``, or ``2``.
+``--fields age:0-2`` writes field ``age`` as the integers ``0``, ``1``, or ``2``.
 When several ``age_*`` tags are present, the highest number in range is kept.
 A box with none of those tags gets the low end of the range. Tags outside the
 range are reported and that field is left unset. Existing label tags are not
@@ -119,16 +119,16 @@ def family_codes(tags: object, name: str) -> list[tuple[str, int]]:
     return found
 
 
-def attribute_from_tags(tags: object, spec: FieldSpec) -> tuple[str | None, list[str]]:
-    """Return the field value, or None when a family tag falls outside the range."""
+def attribute_from_tags(tags: object, spec: FieldSpec) -> tuple[int | None, list[str]]:
+    """Return the integer field value, or None when a family tag falls outside the range."""
     found = family_codes(tags, spec.name)
     outside = [tag for tag, code in found if code < spec.low or code > spec.high]
     if outside:
         return None, outside
     inside = [code for _, code in found]
     if not inside:
-        return str(spec.low), []
-    return str(max(inside)), []
+        return spec.low, []
+    return max(inside), []
 
 
 def issue_row(
@@ -171,14 +171,33 @@ def overwrite_row(
     }
 
 
-def stored_value(current: object) -> str | None:
-    """Return the stored field text, or None when the field is missing."""
+def stored_value(current: object) -> int | str | None:
+    """Return the stored field value, or None when the field is missing.
+
+    Integers stay integers. Text stays text. Blank text is treated as missing.
+    """
     if current is None:
         return None
+    if isinstance(current, int) and not isinstance(current, bool):
+        return current
     text = str(current).strip()
     if not text:
         return None
     return text
+
+
+def same_number(current: object, value: int) -> bool:
+    """Return True when ``current`` is the same integer as ``value``.
+
+    The text ``"2"`` matches the integer ``2``. Writes still store ``value`` as an int.
+    """
+    if isinstance(current, bool) or current is None:
+        return False
+    if isinstance(current, int):
+        return current == value
+    if isinstance(current, str) and re.fullmatch(r"-?\d+", current):
+        return int(current) == value
+    return False
 
 
 def append_changed_tag(existing: object) -> list[str]:
@@ -193,11 +212,11 @@ def plan_detection(
     detection: fo.Detection,
     names: set[str],
     specs: list[FieldSpec],
-) -> tuple[dict[str, str], list[dict[str, str]], list[dict[str, str]]]:
+) -> tuple[dict[str, int], list[dict[str, str]], list[dict[str, str]]]:
     """Return field writes, issue rows, and overwrite rows. Sample id is filled later."""
     if str(detection.label) not in names:
         return {}, [], []
-    writes: dict[str, str] = {}
+    writes: dict[str, int] = {}
     issues: list[dict[str, str]] = []
     overwrites: list[dict[str, str]] = []
     detection_id = str(getattr(detection, "id", "") or "")
@@ -210,9 +229,9 @@ def plan_detection(
         current = stored_value(detection.get_attribute_value(spec.name, None))
         if current is None:
             writes[spec.name] = value
-        elif current != value:
+        elif not same_number(current, value):
             writes[spec.name] = value
-            overwrites.append(overwrite_row(label, detection_id, spec.name, current, value))
+            overwrites.append(overwrite_row(label, detection_id, spec.name, str(current), str(value)))
     return writes, issues, overwrites
 
 

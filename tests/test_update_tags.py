@@ -12,18 +12,60 @@ update = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(update)
 
 
+def sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
 def test_matching_duplicates_ambiguity_and_missing_hash(tmp_path):
     images = []
     for name, data in [("renamed.jpg", b"a"), ("copy.PNG", b"a"), ("dup.jpg", b"b"), ("unknown.jpg", b"c")]:
         path = tmp_path / name
         path.write_bytes(data)
         images.append(path)
-    def sha(data):
-        return hashlib.sha256(data).hexdigest()
-    rows = [("1", sha(b"a"), ["old"]), ("2", sha(b"b"), []), ("3", sha(b"b"), []), ("4", None, [])]
-    updates, issues, matched = update.build_plan(rows, images, ["review"])
+    rows = [
+        ("1", sha(b"a"), "p1", ["old"]),
+        ("2", sha(b"b"), "p2", []),
+        ("3", sha(b"b"), "p3", []),
+        ("4", None, "p4", []),
+    ]
+    updates, issues, matched, sha256_hits, phash_hits = update.build_plan(
+        rows, images, ["review"], lambda path: "missing"
+    )
     assert updates == ["1"] and matched == 1
+    assert sha256_hits == 2 and phash_hits == 0
     assert [item["issue"] for item in issues] == ["missing_sha256", "ambiguous_sha256", "unmatched"]
+    assert issues[-1]["phash"] == "missing"
+
+
+def test_phash_fallback_requires_unique_sample(tmp_path):
+    path = tmp_path / "reencoded.jpg"
+    path.write_bytes(b"reencoded")
+    rows = [("9", sha(b"original"), "same", ["old"]), ("8", sha(b"other"), "other", [])]
+    updates, issues, matched, sha256_hits, phash_hits = update.build_plan(
+        rows, [path], ["review"], lambda image: "SAME"
+    )
+    assert updates == ["9"] and matched == 1
+    assert sha256_hits == 0 and phash_hits == 1 and not issues
+
+    shared = tmp_path / "shared.jpg"
+    shared.write_bytes(b"shared")
+    rows = [("1", sha(b"a"), "dup", []), ("2", sha(b"b"), "dup", [])]
+    updates, issues, matched, sha256_hits, phash_hits = update.build_plan(
+        rows, [shared], ["review"], lambda image: "dup"
+    )
+    assert updates == [] and matched == 0 and sha256_hits == 0 and phash_hits == 0
+    assert issues[0]["issue"] == "ambiguous_phash"
+    assert issues[0]["sample_ids"] == "1,2"
+
+    broken = tmp_path / "broken.jpg"
+    broken.write_bytes(b"broken")
+
+    def fail(image):
+        raise ValueError("bad image")
+
+    updates, issues, matched, *_ = update.build_plan(rows, [broken], ["review"], fail)
+    assert not updates and matched == 0
+    assert issues[0]["issue"] == "phash_error"
 
 
 def test_scan_and_read_failure(tmp_path):
@@ -34,7 +76,7 @@ def test_scan_and_read_failure(tmp_path):
     (child / "b.png").write_bytes(b"image")
     assert len(update.list_images(tmp_path, False)) == 1
     assert len(update.list_images(tmp_path, True)) == 2
-    updates, issues, matched = update.build_plan([], [tmp_path / "missing.jpg"], ["review"])
+    updates, issues, matched, *_ = update.build_plan([], [tmp_path / "missing.jpg"], ["review"], lambda path: "x")
     assert not updates and matched == 0
     assert issues[0]["issue"] == "read_error"
 
@@ -61,11 +103,11 @@ class Dataset:
         self.sample = Sample()
 
     def get_field_schema(self):
-        return {"sha256": object()}
+        return {"sha256": object(), "phash": object()}
 
     def values(self, fields):
-        assert fields == ["id", "sha256", "tags"]
-        return [["1"], [hashlib.sha256(b"image").hexdigest()], [self.sample.tags]]
+        assert fields == ["id", "sha256", "phash", "tags"]
+        return [["1"], [hashlib.sha256(b"image").hexdigest()], ["p1"], [self.sample.tags]]
 
     def __getitem__(self, sample_id):
         assert sample_id == "1"
@@ -98,4 +140,7 @@ def test_missing_dataset_or_hash_field(tmp_path):
     fo.dataset_exists = lambda name: True
     fo.load_dataset = lambda name: SimpleNamespace(get_field_schema=lambda: {})
     with pytest.raises(ValueError, match="update_media.py"):
+        update.run(args, fo)
+    fo.load_dataset = lambda name: SimpleNamespace(get_field_schema=lambda: {"sha256": object()})
+    with pytest.raises(ValueError, match="phash"):
         update.run(args, fo)

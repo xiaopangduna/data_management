@@ -45,6 +45,7 @@ mongorestore   --uri="mongodb://127.0.0.1:27017"   --gzip   --archive="$HOME/pro
 mongorestore   --uri="mongodb://127.0.0.1:27017"   --gzip   --archive="$HOME/project/backup/fiftyone/fiftyone_20260924.archive.gz" --drop --verbose 2>&1 | tee restore.log
 
 ```
+
 # FiftyOne + CVAT
 
 页面：http://192.168.101.118:8080  http://localhost:8080。`cvat_server`、`cvat_ui`、`traefik`、`nuclio` 和检测函数都是 `restart=always`。机器重启后只要 Docker 会自启，不用再拉。执行过 `docker compose down` 才需要下面的启动命令。
@@ -109,6 +110,29 @@ X-AnyLabeling 的 label flags 是布尔值，对应 FiftyOne 的 label tags。at
 tags 填多个，例如 ["train", "big_face"]
 把 all 设为 True
 各脚本都支持 `--dry-run`：先看统计，确认后再去掉该参数正式写库。问题 CSV 在 `tmp/`。
+
+  左侧 **Label tags** 同时勾选两个框标签是「有其中一个即可」。要同时具备，用图片网格上方的视图栏：
+
+1. 点视图栏右侧 **+**，输入 `FilterLabels` 并回车。
+2. **field** 填 `ground_truth`，回车。
+3. **filter** 粘贴 JSON（页面不接受 Python 的 `F(...)`），回车：
+
+```json
+{"$setIsSubset": [["eval_err", "pred_eye_open_0"], "$$this.tags"]}
+```
+
+4. **only_matches** 保持 `True`，**trajectories** 保持 `False`，各回车一次。
+
+网格只留下同时带这两个标签的框。另外两批把 `pred_eye_open_0` 换成 `pred_eye_open_2` 或 `pred_background`。左上角视图下拉里的 **Save current filters as view** 可保存；视图栏右侧清空按钮回到完整数据集。
+
+## 测试
+
+```bash
+uv run pytest -m "not cli"   # 单测（不跑完整 CLI）
+uv run pytest -m cli         # CLI 集成测试（需要本地数据集）
+
+uv run scripts/yolo_dir_to_box_crop_csv.py --data-root /home/huangwenhua/project/dataset/eye/v301_eye
+```
 
 ## 流程
 
@@ -333,8 +357,8 @@ uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/
 
 #导出v301数据集
 uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/eye/v301_eye/ --split train_v301 --sample-tags train_v301 --classes head-eye_open_0,head-eye_open_1,head-eye_open_2
-uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/eye/v301_eye/ --split test_v301 --sample-tags test_v301 --classes head-eye_open_0,head-eye_open_1,head-eye_open_2
-
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/eye/v301_eye/ --split test_v301 --sample-tags test_v301 --classes head-eye_open_0,head-eye_open_1,head-eye_open_2 --export-media copy
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/eye/v301_eye/ --split test_v302 --sample-tags test_v302 --classes head-eye_open_0,head-eye_open_1,head-eye_open_2 --export-media copy
 ```
 
 默认软链原图。无框图保留为空 txt。`--label-field` 默认 `ground_truth`。`--split` 控制 `images/<split>` 和 `labels/<split>` 目录名，默认 `train`。
@@ -437,7 +461,7 @@ uv run python scripts/extract_by_name.py \
 
 ## 按图片内容追加 tags
 
-指定目录中的图片按文件内容 SHA-256 匹配已有数据集，只追加 sample tags，保留原标签并去重。文件名和路径不参与匹配，不导入新样本。先用 `update_media.py` 补齐库中的 `sha256`。
+指定目录中的图片先按文件内容 SHA-256 匹配已有数据集。SHA-256 不在库中时，再按感知哈希 `phash` 匹配唯一的样本。只追加 sample tags，保留原标签并去重。文件名和路径不参与匹配，不导入新样本。先用 `update_media.py` 补齐库中的 `sha256` 和 `phash`。
 
 ```bash
 uv run python scripts/update_tags.py \
@@ -447,7 +471,7 @@ uv run python scripts/update_tags.py \
   --dry-run
 ```
 
-默认只扫描当前层；包含子目录时加 `--recursive`。确认统计后去掉 `--dry-run` 正式写库。相同内容的多份输入图片只更新对应样本一次；同一哈希对应多个库内样本时跳过。未匹配图片、读取失败、库内缺少哈希及多样本匹配记录到 `tmp/update_tags_<数据集>.csv`（每次运行覆盖，预览也会生成）。整库缺少 `sha256` 字段时直接报错，提示先补哈希。
+默认只扫描当前层；包含子目录时加 `--recursive`。确认统计后去掉 `--dry-run` 正式写库。相同内容的多份输入图片只更新对应样本一次。同一个 SHA-256 或同一个 `phash` 对应多个库内样本时跳过该图，不更新；SHA-256 已唯一命中时不再查 `phash`。统计里 `sha256_hits` / `phash_hits` 是命中的图片数，`matched_samples` 是去重后的样本数。未匹配图片、读取失败、感知哈希计算失败、库内缺少哈希及多样本匹配记录到 `tmp/update_tags_<数据集>.csv`（含 `phash` 列，每次运行覆盖，预览也会生成）。整库缺少 `sha256` 或 `phash` 字段时直接报错，提示先补哈希。
 
 # cvat联动
 
@@ -461,32 +485,33 @@ fiftyone收回
 
 http://192.168.101.118:8080
 
-uv run python scripts/update_label_attributes.py   
-  --dataset BBM08S_head   
-  --sample-tags pred_v121_bad   
-  --classes head   
-  --fields age:0-2   
+uv run python scripts/update_label_attributes.py  
+  --dataset BBM08S_head  
+  --sample-tags pred_v121_bad  
+  --classes head  
+  --fields age:0-2  
   --dry-run
 
-uv run python scripts/export_cvat.py   
-  --dataset BBM08S_head   
-  --sample-tags pred_v121_bad   
-  --classes head   
-  --attributes age=0,1,2   
-  --anno-key cvat_head_261013   
-  --project-name BBM08S_head_age   
+uv run python scripts/export_cvat.py  
+  --dataset BBM08S_head  
+  --sample-tags pred_v121_bad  
+  --classes head  
+  --attributes age=0,1,2  
+  --anno-key cvat_head_261013  
+  --project-name BBM08S_head_age  
   --dry-run
 
-uv run python scripts/update_cvat_labels.py   
-  --dataset BBM08S_head   
-  --anno-key cvat_head_261013   
-  --classes head   
-  --sample-tags label_cvat_261013   
+uv run python scripts/update_cvat_labels.py  
+  --dataset BBM08S_head  
+  --anno-key cvat_head_261013  
+  --classes head  
+  --sample-tags label_cvat_261013  
   --dry-run
 
-uv run python scripts/update_tags_from_attributes.py   
-  --dataset BBM08S_head   
-  --sample-tags cvat_head_age_261013   
-  --classes head   
-  --fields age:0-2   
+uv run python scripts/update_tags_from_attributes.py  
+  --dataset BBM08S_head  
+  --sample-tags cvat_head_age_261013  
+  --classes head  
+  --fields age:0-2  
   --dry-run
+
