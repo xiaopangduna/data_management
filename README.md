@@ -62,7 +62,7 @@ docker compose -f docker-compose.yml -f components/serverless/docker-compose.ser
 
 ## 导出已有框
 
-在 `data_management` 里执行。只上传 `--classes` 里已有的框，其它类别留在 FiftyOne。`--anno-key` 不能重复。成功后样本打上 `cvat_<anno-key>`。
+在 `data_management` 里执行。只上传 `--classes` 里已有的框，其它类别留在 FiftyOne。`kpt` 开头的框不走这里，用下面的关键点命令。`--anno-key` 不能重复。成功后样本打上 `cvat_<anno-key>`。
 
 ```bash
 export FIFTYONE_CVAT_URL='http://192.168.101.118:8080'
@@ -167,6 +167,34 @@ uv run python scripts/import_coco_yolo.py \
 
 整库重导加 `--replace`。多个 YOLO split 各跑一次 `import_yolo.py`。
 
+### 补人脸关键点
+
+图片已经在库里。先按图片 SHA-256 对应样本的 `sha256`。对不上的再按完全相同的 `phash` 对应。一个哈希对应多张样本，或这份 JSON 里多张图哈希相同，就跳过。不看文件名，不改路径，不新建样本。库须先跑过 `update_media.py`。框追加为 `ground_truth` 里的 `kpt_face`：有 `face_box` 用它，没有则用 COCO `bbox` 保底。42 个点写入 `keypoints`，同一张脸共用一个 instance。已有的 `head`、`baby_face`、`baby_body` 保留。重跑只替换 `kpt_face` 和同名关键点。`--sample-tags` 加在这次写上标注的样本上，不覆盖原标签。train、val、test 各跑一次。外接矩形以后可以再改，只动 `kpt_face`。
+
+68 点的 `coco_1015` 走另一个字段 `keypoints_68`，框仍是 `kpt_face`。这张图的另一套点里已经有 `kpt_face` 时，框保持不动，只补点。用名字已经改成 68 个的 `instance_*_68.json`。原始 69 个名字的 JSON 会被拒绝。点按坐标原样写入，68 到 42 的映射留在训练配置里。
+
+```bash
+uv run python scripts/update_face_keypoints.py \
+  --dataset BBM08S_head \
+  --image-dir /home/huangwenhua/project/dataset/tmp/train_0428_by/images \
+  --json /home/huangwenhua/project/dataset/tmp/train_0428_by/instance_train.json \
+  --sample-tags kpt_train \
+  --dry-run
+```
+
+val、test 换成对应的 JSON 和 `kpt_val`、`kpt_test`。68 点同样各跑一次，JSON 换成 `instance_train_68.json` 这一类：
+
+```bash
+uv run python scripts/update_face_keypoints.py \
+  --dataset BBM08S_head \
+  --image-dir /home/huangwenhua/project/dataset/tmp/coco_1015/images \
+  --json /home/huangwenhua/project/dataset/tmp/coco_1015/instance_train_68.json \
+  --sample-tags kpt68_train \
+  --dry-run
+```
+
+JSON 里有、库里没有的文件名写入 `tmp/update_face_keypoints_<数据集>.csv`。样本已有 `metadata` 且和 JSON 宽高不同时，绝对坐标若落在 `metadata` 范围内，按 `metadata` 换算；超出则跳过。
+
 ### Step 2：补哈希与尺寸
 
 ```bash
@@ -236,6 +264,24 @@ uv run python scripts/update_cvat_labels.py \
   --anno-key cvat_head_261012 \
   --classes baby_head,adult_head \
   --sample-tags label_cvat_261012 \
+  --dry-run
+```
+
+42 个关键点和它的框一起上传。`--label` 默认 `kpt_face`，也可以换成其它 `kpt` 开头的名字。CVAT 里骨架用这个名字，矩形用 `<标签>_box`，例如 `kpt_face` 和 `kpt_face_box`。拉回时矩形写回原来的框名。同一张脸的框和点配成一对：instance 相同，或这张图上各只有一个。配不上就整批停下。删掉框或整张骨架时，这一对从库里去掉。少一个点仍占原来的下标。项目默认叫 `<数据集>_keypoints_42`，不要和框的项目混用。68 点还不用这两条命令。
+
+```bash
+uv run python scripts/export_cvat_keypoints.py \
+  --dataset BBM08S_head \
+  --sample-tags kpt_train \
+  --anno-key cvat_kpt_42 \
+  --dry-run
+```
+
+```bash
+uv run python scripts/update_cvat_keypoints.py \
+  --dataset BBM08S_head \
+  --anno-key cvat_kpt_42 \
+  --sample-tags kpt_cvat \
   --dry-run
 ```
 
@@ -357,8 +403,11 @@ uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/
 
 #导出v301数据集
 uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/eye/v301_eye/ --split train_v301 --sample-tags train_v301 --classes head-eye_open_0,head-eye_open_1,head-eye_open_2
+
 uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/eye/v301_eye/ --split test_v301 --sample-tags test_v301 --classes head-eye_open_0,head-eye_open_1,head-eye_open_2 --export-media copy
 uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/eye/v301_eye/ --split test_v302 --sample-tags test_v302 --classes head-eye_open_0,head-eye_open_1,head-eye_open_2 --export-media copy
+
+uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/eye/v302_eye/ --split train_v302 --sample-tags train_v302 --classes head-eye_open_0,head-eye_open_1,head-eye_open_2
 ```
 
 默认软链原图。无框图保留为空 txt。`--label-field` 默认 `ground_truth`。`--split` 控制 `images/<split>` 和 `labels/<split>` 目录名，默认 `train`。
@@ -388,7 +437,7 @@ uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/
 ```
 scripts/
   import_yolo.py / import_coco_yolo.py
-  update_media.py / update_xlabel_labels.py
+  update_media.py / update_xlabel_labels.py / update_face_keypoints.py
   dedup_fiftyone.py
   check_image_dupes.py
   export_xlabel.py / export_yolo.py

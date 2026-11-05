@@ -2,8 +2,9 @@
 
 Selects samples by sample tags, uploads the current ``--label-field`` boxes for
 ``--classes``, and records the run under ``--anno-key``. Other classes stay in
-FiftyOne and are not sent. After a successful upload, each selected sample is
-tagged ``cvat_<anno-key>``.
+FiftyOne and are not sent. Labels starting with ``kpt`` are refused; those boxes
+belong to the keypoint export. After a successful upload, each selected sample
+is tagged ``cvat_<anno-key>``.
 
 Images are split across CVAT tasks so each upload stays under the server body
 limit. Those tasks share one project and one ``--anno-key``.
@@ -43,6 +44,17 @@ def name_list(value: str) -> list[str]:
     if not names:
         raise argparse.ArgumentTypeError("provide at least one name")
     return names
+
+
+def reject_kpt_classes(classes: list[str]) -> None:
+    """Keep keypoint boxes out of the rectangle export."""
+    blocked = [name for name in classes if name.startswith("kpt")]
+    if blocked:
+        joined = ", ".join(blocked)
+        raise ValueError(
+            f"Labels starting with 'kpt' are uploaded with the keypoints ({joined}). "
+            "Use export_cvat_keypoints.py."
+        )
 
 
 def anno_key(value: str) -> str:
@@ -335,6 +347,7 @@ def print_report(values: dict[str, object]) -> None:
 
 def run(args: argparse.Namespace) -> int:
     """Select samples and export them to CVAT."""
+    reject_kpt_classes(args.classes)
     if not fo.dataset_exists(args.dataset):
         raise ValueError(f"Dataset does not exist: {args.dataset}")
     dataset = fo.load_dataset(args.dataset)

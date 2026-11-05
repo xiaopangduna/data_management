@@ -62,6 +62,15 @@ def test_task_size_stays_within_upload_budget():
         export_cvat.task_size_for_budget([80, 10], budget=50)
 
 
+def test_kpt_classes_stay_on_the_keypoint_scripts():
+    with pytest.raises(ValueError, match="export_cvat_keypoints"):
+        export_cvat.reject_kpt_classes(["head", "kpt_face"])
+    with pytest.raises(ValueError, match="update_cvat_keypoints"):
+        update_cvat.reject_kpt_classes(["kpt_hand"])
+    export_cvat.reject_kpt_classes(["head"])
+    update_cvat.reject_kpt_classes(["baby_head"])
+
+
 def test_project_classes_must_match_when_project_exists():
     export_cvat.ensure_project_classes(None, ["baby_head"])
     export_cvat.ensure_project_classes({"adult_head", "baby_head"}, ["baby_head", "adult_head"])

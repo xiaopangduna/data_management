@@ -1,9 +1,10 @@
 """Update FiftyOne labels from a CVAT annotation run, replacing only the requested classes.
 
 Boxes whose labels are outside ``--classes`` are restored from the dataset
-snapshot taken before the download. Samples whose requested boxes or CVAT
-attribute values changed gain ``--sample-tags`` and ``changed``. The
-``cvat_<anno-key>`` tag from export is left in place.
+snapshot taken before the download. Labels starting with ``kpt`` are refused.
+Samples whose requested boxes or CVAT attribute values changed gain
+``--sample-tags`` and ``changed``. The ``cvat_<anno-key>`` tag from export is
+left in place.
 """
 
 from __future__ import annotations
@@ -36,6 +37,17 @@ def name_list(value: str) -> list[str]:
     if not names:
         raise argparse.ArgumentTypeError("provide at least one name")
     return names
+
+
+def reject_kpt_classes(classes: list[str]) -> None:
+    """Keep keypoint boxes out of the rectangle pullback."""
+    blocked = [name for name in classes if name.startswith("kpt")]
+    if blocked:
+        joined = ", ".join(blocked)
+        raise ValueError(
+            f"Labels starting with 'kpt' are written back by the keypoint pullback ({joined}). "
+            "Use update_cvat_keypoints.py."
+        )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -329,6 +341,7 @@ def apply_load(
 
 def run(args: argparse.Namespace) -> int:
     """Download one annotation run and merge the requested classes into FiftyOne."""
+    reject_kpt_classes(args.classes)
     if not fo.dataset_exists(args.dataset):
         raise ValueError(f"Dataset does not exist: {args.dataset}")
     dataset = fo.load_dataset(args.dataset)
