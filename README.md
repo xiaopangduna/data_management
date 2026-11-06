@@ -267,13 +267,14 @@ uv run python scripts/update_cvat_labels.py \
   --dry-run
 ```
 
-42 个关键点和它的框一起上传。`--label` 默认 `kpt_face`，也可以换成其它 `kpt` 开头的名字。CVAT 里骨架用这个名字，矩形用 `<标签>_box`，例如 `kpt_face` 和 `kpt_face_box`。拉回时矩形写回原来的框名。同一张脸的框和点配成一对：instance 相同，或这张图上各只有一个。配不上就整批停下。删掉框或整张骨架时，这一对从库里去掉。少一个点仍占原来的下标。项目默认叫 `<数据集>_keypoints_42`，不要和框的项目混用。68 点还不用这两条命令。
+42 个关键点和它的框一起上传。`--label` 默认 `kpt_face`，也可以换成其它 `kpt` 开头的名字。CVAT 里骨架用这个名字，矩形用 `<标签>_box`，例如 `kpt_face` 和 `kpt_face_box`。拉回时矩形写回原来的框名。同一张脸的框和点配成一对：instance 相同，或这张图上各只有一个。配不上就整批停下。删掉框或整张骨架时，这一对从库里去掉。少一个点仍占原来的下标。可见性用 0 未标注、1 遮挡、2 可见：未标注在 CVAT 里是 outside，遮挡是 occluded。项目默认叫 `<数据集>_keypoints_42`，不要和框的项目混用。68 点还不用这两条命令。新画一张脸时，点的初始位置来自 `--skeleton-config`：一个 JSON，点名对应 `[x, y]`，名字必须和库里的骨架一致。CVAT 把这张图缩放到拖出的矩形里。不传则排成格子。已经建好的项目沿用里面保存的模板。
 
 ```bash
 uv run python scripts/export_cvat_keypoints.py \
   --dataset BBM08S_head \
   --sample-tags kpt_train \
   --anno-key cvat_kpt_42 \
+  --skeleton-config configs/face_keypoint_42.json \
   --dry-run
 ```
 

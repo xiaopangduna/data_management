@@ -54,6 +54,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--label-field", default=boxes.DEFAULT_LABEL_FIELD, type=boxes.nonempty)
     parser.add_argument("--keypoints-field", default=shapes.KEYPOINTS_FIELD, type=boxes.nonempty)
     parser.add_argument("--label", default=shapes.FACE_LABEL, type=boxes.nonempty)
+    parser.add_argument(
+        "--skeleton-config",
+        default=None,
+        type=Path,
+        help="JSON map of point name to [x, y]. CVAT scales it into a newly drawn skeleton.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
 
@@ -128,9 +134,12 @@ def shapes_for_pairs(
         points = list(keypoint.points or [])
         if len(points) != shapes.POINT_COUNT:
             raise ValueError(f"Expected {shapes.POINT_COUNT} points, found {len(points)}")
+        visibility = None
+        if keypoint.has_attribute("visibility"):
+            visibility = [int(flag) for flag in (keypoint.visibility or [])]
         built.append(shapes.rectangle_shape(box_id, box.bounding_box, width, height, frame, group))
         built.append(shapes.skeleton_shape(
-            skeleton_id, sublabel_ids, points, width, height, frame, group=group
+            skeleton_id, sublabel_ids, points, width, height, frame, group=group, visibility=visibility
         ))
     return built
 
@@ -156,7 +165,11 @@ def task_annotations(chunk: list[dict]) -> dict:
 
 
 def ensure_project(
-    api: object, project_name: str, skeleton: fo.KeypointSkeleton, label: str
+    api: object,
+    project_name: str,
+    skeleton: fo.KeypointSkeleton,
+    label: str,
+    positions: dict[str, tuple[int, int]] | None = None,
 ) -> tuple[int, int, list[int], int]:
     """Create or check the face project. Returns project, skeleton, sublabel, and box ids."""
     point_names = list(skeleton.labels or [])
@@ -167,7 +180,7 @@ def ensure_project(
         created = api.post(api.projects_url, json={
             "name": project_name,
             "labels": [
-                shapes.skeleton_label(point_names, edges, name=label),
+                shapes.skeleton_label(point_names, edges, name=label, positions=positions),
                 shapes.rectangle_label(box_name),
             ],
         }).json()
@@ -210,6 +223,10 @@ def run(args: argparse.Namespace, api: object | None = None) -> int:
         )
     shapes.require_kpt_label(args.label)
     skeleton = require_skeleton(dataset, args.keypoints_field)
+    positions = None
+    if args.skeleton_config is not None:
+        positions = shapes.load_template(args.skeleton_config)
+        shapes.template_positions(list(skeleton.labels or []), positions)
     boxes.ensure_detections_field(dataset, args.label_field)
     if args.anno_key in dataset.list_annotation_runs() or args.anno_key in saved_runs(dataset):
         raise ValueError(f"Annotation run '{args.anno_key}' already exists. Choose another --anno-key.")
@@ -257,6 +274,7 @@ def run(args: argparse.Namespace, api: object | None = None) -> int:
         "points": shapes.POINT_COUNT,
         "anno_key": args.anno_key,
         "project_name": project_name,
+        "skeleton_config": "" if args.skeleton_config is None else str(args.skeleton_config),
         "samples": selected,
         "pairs": sum(len(item["pairs"]) for item in prepared),
         "upload_bytes": sum(sizes),
@@ -269,7 +287,7 @@ def run(args: argparse.Namespace, api: object | None = None) -> int:
 
     api = connect(api)
     project_id, project_label_id, project_sublabels, project_box_id = ensure_project(
-        api, project_name, skeleton, args.label
+        api, project_name, skeleton, args.label, positions
     )
     label_names = list(skeleton.labels or [])
     tasks = []

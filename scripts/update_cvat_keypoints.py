@@ -3,8 +3,9 @@
 Replaces one ``kpt`` label in the keypoints field and its box in the detection
 field recorded at upload. The CVAT rectangle ``<label>_box`` is stored under
 the original label. Other labels in both fields stay. A point CVAT marks
-outside comes back as NaN and keeps its index. Deleting the box or the whole
-skeleton removes that pair. Samples whose box or points moved gain
+outside comes back as NaN with visibility 0. An occluded point keeps its
+coordinates and visibility 1. A visible point is visibility 2. Deleting the
+box or the whole skeleton removes that pair. Samples whose box or points moved gain
 ``--sample-tags`` and ``changed``. The ``cvat_<anno-key>`` tag from the upload
 is left in place. ``--dry-run`` downloads the task and prints how many samples
 changed, without writing the dataset.

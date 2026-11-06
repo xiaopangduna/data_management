@@ -1,6 +1,7 @@
 """42-point CVAT skeleton upload and pullback."""
 import importlib.util
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -28,6 +29,43 @@ def labels() -> list[str]:
     return [f"p{index}" for index in range(shapes.POINT_COUNT)]
 
 
+FACE_CONFIG = Path(__file__).parents[1] / "configs" / "face_keypoint_42.json"
+FACE_NAMES = [
+    *[f"chin_{index}" for index in range(9)],
+    *[f"nose_bridge_{index}" for index in range(4)],
+    *[f"nose_bottom_{index}" for index in range(5)],
+    *[f"right_eye_{index}" for index in range(6)],
+    *[f"left_eye_{index}" for index in range(6)],
+    *[f"mouth_{index}" for index in range(12)],
+]
+
+
+def circle_center(svg: str, name: str) -> tuple[int, int]:
+    match = re.search(rf'cx="(-?\d+)" cy="(-?\d+)"[^>]*data-label-name="{name}"', svg)
+    assert match is not None
+    return int(match.group(1)), int(match.group(2))
+
+
+def test_face_config_lays_out_a_frontal_face():
+    positions = shapes.load_template(FACE_CONFIG)
+    svg = shapes.skeleton_svg(FACE_NAMES, [[0, 1], [41, 30]], positions)
+    chin_side = circle_center(svg, "chin_0")
+    chin_center = circle_center(svg, "chin_4")
+    right_outer = circle_center(svg, "right_eye_0")
+    left_outer = circle_center(svg, "left_eye_3")
+    mouth = circle_center(svg, "mouth_3")
+    assert chin_center[1] > chin_side[1]
+    assert right_outer[0] < left_outer[0]
+    assert mouth[1] > right_outer[1]
+    assert not svg.lstrip().startswith("<svg")
+
+
+def test_skeleton_config_must_match_the_dataset_names():
+    positions = {"chin_0": (1, 2)}
+    with pytest.raises(ValueError, match="Missing"):
+        shapes.template_positions(FACE_NAMES, positions)
+
+
 def test_skeleton_label_keeps_point_order():
     label = shapes.skeleton_label(labels(), [[0, 1], [41, 40]])
     assert label["name"] == "kpt_face"
@@ -51,8 +89,26 @@ def test_outside_point_round_trips_as_nan():
     assert len(faces) == 1
     restored, visibility = faces[0]
     assert math.isnan(restored[3][0]) and visibility[3] == 0
-    assert restored[0] == (0.25, 0.5) and visibility[0] == 1
+    assert restored[0] == (0.25, 0.5) and visibility[0] == 2
+    assert shape["elements"][0]["occluded"] is False
     assert shapes.faces_from_shapes([shape], 0, 7, node_order, 200, 100) == []
+
+
+def test_occluded_point_round_trips_with_its_coordinates():
+    points = [(0.25, 0.5)] * shapes.POINT_COUNT
+    visibility = [2] * shapes.POINT_COUNT
+    visibility[4] = 1
+    visibility[5] = 0
+    node_order = list(range(100, 142))
+    shape = shapes.skeleton_shape(7, node_order, points, 200, 100, frame=1, visibility=visibility)
+    assert shape["elements"][4]["occluded"] is True
+    assert shape["elements"][4]["outside"] is False
+    assert shape["elements"][4]["points"] == [50, 50]
+    assert shape["elements"][5]["outside"] is True
+    restored, flags = shapes.faces_from_shapes([shape], 1, 7, node_order, 200, 100)[0]
+    assert restored[4] == (0.25, 0.5) and flags[4] == 1
+    assert math.isnan(restored[5][0]) and flags[5] == 0
+    assert flags[0] == 2
 
 
 def test_points_moved_ignores_pixel_rounding():
@@ -123,7 +179,44 @@ def test_dry_run_reports_the_42_point_upload(tmp_path, capsys):
         output = capsys.readouterr().out
         assert "box_label=kpt_face_box" in output
         assert "pairs=1" in output
+        assert "skeleton_config=" in output
         assert shapes.RUNS_KEY not in (dataset.info or {})
+    finally:
+        dataset.delete()
+
+
+def test_dry_run_checks_the_skeleton_config(tmp_path, capsys):
+    image = tmp_path / "face.jpg"
+    Image.new("RGB", (8, 8)).save(image)
+    dataset = fo.Dataset()
+    try:
+        dataset.skeletons = {
+            "keypoints": fo.KeypointSkeleton(labels=FACE_NAMES, edges=[[0, 1]]),
+        }
+        dataset.save()
+        dataset.add_sample(face_sample(image))
+        args = export.parse_args([
+            "--dataset", dataset.name,
+            "--sample-tags", "kpt_train",
+            "--anno-key", "cvat_kpt_42",
+            "--skeleton-config", str(FACE_CONFIG),
+            "--dry-run",
+        ])
+        assert export.run(args) == 0
+        assert f"skeleton_config={FACE_CONFIG}" in capsys.readouterr().out
+        dataset.skeletons = {
+            "keypoints": fo.KeypointSkeleton(labels=labels(), edges=[[0, 1]]),
+        }
+        dataset.save()
+        mismatched = export.parse_args([
+            "--dataset", dataset.name,
+            "--sample-tags", "kpt_train",
+            "--anno-key", "cvat_kpt_other",
+            "--skeleton-config", str(FACE_CONFIG),
+            "--dry-run",
+        ])
+        with pytest.raises(ValueError, match="Missing"):
+            export.run(mismatched)
     finally:
         dataset.delete()
 

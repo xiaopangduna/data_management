@@ -3,12 +3,16 @@
 FiftyOne's CVAT uploader sends keypoints as one unlabeled points shape, so a
 point can be added or deleted and the index changes. These helpers use a CVAT
 skeleton instead: one sublabel per point, in the dataset skeleton order.
-A point that is missing in FiftyOne is uploaded as outside and comes back as NaN.
+Visibility follows COCO: 0 unlabeled, 1 occluded, 2 visible. An unlabeled point
+is uploaded outside and comes back as NaN. An occluded point keeps its
+coordinates and CVAT's occluded flag.
 """
 
 from __future__ import annotations
 
+import json
 import math
+from pathlib import Path
 from xml.sax.saxutils import escape
 
 POINT_COUNT = 42
@@ -18,7 +22,46 @@ RUNS_KEY = "cvat_keypoint_runs"
 COORD_DECIMALS = 6
 
 
-def skeleton_svg(labels: list[str], edges: list[list[int]]) -> str:
+def load_template(path: Path) -> dict[str, tuple[int, int]]:
+    """Read a skeleton drawing template. Each name maps to ``[x, y]``."""
+    document = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(document, dict) or not document:
+        raise ValueError(f"Skeleton config must map point names to [x, y]: {path}")
+    positions: dict[str, tuple[int, int]] = {}
+    for name, point in document.items():
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"Skeleton config has an empty point name: {path}")
+        if (
+            not isinstance(point, list)
+            or len(point) != 2
+            or any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in point)
+        ):
+            raise ValueError(f"Point '{name}' in {path} must be [x, y]")
+        positions[name] = (int(point[0]), int(point[1]))
+    return positions
+
+
+def template_positions(
+    labels: list[str], positions: dict[str, tuple[int, int]] | None = None
+) -> list[tuple[int, int]]:
+    """Return one circle position per label. A config must name the dataset skeleton exactly."""
+    if positions is not None:
+        missing = [name for name in labels if name not in positions]
+        extra = [name for name in positions if name not in labels]
+        if missing or extra:
+            raise ValueError(
+                "Skeleton config names must match the dataset skeleton. "
+                f"Missing {missing}. Extra {extra}."
+            )
+        return [positions[name] for name in labels]
+    return [(8 + (index % 7) * 12, 8 + (index // 7) * 14) for index in range(len(labels))]
+
+
+def skeleton_svg(
+    labels: list[str],
+    edges: list[list[int]],
+    positions: dict[str, tuple[int, int]] | None = None,
+) -> str:
     """Return the inner markup of a CVAT skeleton. Node ids follow ``labels`` order.
 
     CVAT wraps this string in ``<svg>`` itself. An extra wrapper hides the
@@ -27,11 +70,14 @@ def skeleton_svg(labels: list[str], edges: list[list[int]]) -> str:
     Circles are element nodes and lines are edges. CVAT's canvas looks up both
     by ``data-type``; without those attributes it cannot draw or activate the
     skeleton. ``data-label-name`` is replaced by the server with ``data-label-id``.
+
+    ``positions`` places each point for a new drawing. Without it, points sit on
+    a grid. CVAT scales either layout into the rectangle the annotator drags.
     """
+    placed = template_positions(labels, positions)
     circles = []
     for index, name in enumerate(labels):
-        x = 8 + (index % 7) * 12
-        y = 8 + (index // 7) * 14
+        x, y = placed[index]
         circles.append(
             f'<circle r="0.75" cx="{x}" cy="{y}" '
             f'data-type="element node" data-element-id="{index}" data-node-id="{index}" '
@@ -59,7 +105,12 @@ def require_kpt_label(label: str) -> None:
         raise ValueError(f"Label must start with 'kpt', found {label}")
 
 
-def skeleton_label(labels: list[str], edges: list[list[int]], name: str = FACE_LABEL) -> dict:
+def skeleton_label(
+    labels: list[str],
+    edges: list[list[int]],
+    name: str = FACE_LABEL,
+    positions: dict[str, tuple[int, int]] | None = None,
+) -> dict:
     """Return one CVAT project label for a 42-point face skeleton."""
     if len(labels) != POINT_COUNT:
         raise ValueError(f"Expected {POINT_COUNT} keypoint names, found {len(labels)}")
@@ -67,7 +118,7 @@ def skeleton_label(labels: list[str], edges: list[list[int]], name: str = FACE_L
     return {
         "name": name,
         "type": "skeleton",
-        "svg": skeleton_svg(labels, edges),
+        "svg": skeleton_svg(labels, edges, positions),
         "sublabels": [{"name": point_name, "type": "points", "attributes": []} for point_name in labels],
         "attributes": [],
     }
@@ -135,18 +186,28 @@ def skeleton_shape(
     height: int,
     frame: int,
     group: int = 0,
+    visibility: list[int] | None = None,
 ) -> dict:
-    """Return one CVAT skeleton shape. Missing points are marked outside."""
+    """Return one CVAT skeleton shape. Unlabeled points are marked outside."""
     if len(points) != len(sublabel_ids_in_order):
         raise ValueError(
             f"Expected {len(sublabel_ids_in_order)} points, found {len(points)}"
         )
+    if visibility is not None and len(visibility) != len(points):
+        raise ValueError(f"Expected {len(points)} visibility flags, found {len(visibility)}")
     elements = []
-    for sublabel_id, point in zip(sublabel_ids_in_order, points, strict=True):
+    for index, (sublabel_id, point) in enumerate(zip(sublabel_ids_in_order, points, strict=True)):
         xy, outside = absolute_point(point, width, height)
+        flag = None if visibility is None else int(visibility[index])
+        if outside or flag == 0:
+            outside = True
+            occluded = False
+            xy = [0, 0]
+        else:
+            occluded = flag == 1
         elements.append({
             "type": "points",
-            "occluded": False,
+            "occluded": occluded,
             "outside": outside,
             "z_order": 0,
             "rotation": 0,
@@ -214,14 +275,16 @@ def relative_box(xy: object, width: int, height: int) -> list[float]:
     ]
 
 
-def relative_point(xy: object, width: int, height: int, outside: bool) -> tuple[tuple[float, float], int]:
-    """Return a FiftyOne point and visibility. Outside points stay NaN at their index."""
+def relative_point(
+    xy: object, width: int, height: int, outside: bool, occluded: bool = False
+) -> tuple[tuple[float, float], int]:
+    """Return a FiftyOne point and COCO visibility. Outside points stay NaN."""
     if outside or not isinstance(xy, (list, tuple)) or len(xy) < 2:
         return (float("nan"), float("nan")), 0
     return (
         round(float(xy[0]) / width, COORD_DECIMALS),
         round(float(xy[1]) / height, COORD_DECIMALS),
-    ), 1
+    ), (1 if occluded else 2)
 
 
 def label_items(value: object, child_name: str) -> list:
@@ -301,8 +364,9 @@ def skeletons_from_shapes(
         for sublabel_id in node_order:
             element = by_id.get(sublabel_id)
             outside = element is None or bool(element.get("outside"))
+            occluded = False if element is None else bool(element.get("occluded"))
             xy = None if element is None else element.get("points")
-            point, flag = relative_point(xy, width, height, outside)
+            point, flag = relative_point(xy, width, height, outside, occluded)
             points.append(point)
             visibility.append(flag)
         faces.append((points, visibility, int(shape.get("group") or 0)))

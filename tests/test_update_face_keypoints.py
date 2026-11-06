@@ -128,7 +128,7 @@ def test_parse_coco_hides_missing_points_and_ignores_tight_bbox(tmp_path):
     assert face.box == (0.1, 0.4, 0.3, 0.8)
     assert math.isnan(face.points[0][0]) and math.isnan(face.points[0][1])
     assert face.points[1] == (0.01, 0.02)
-    assert face.visibility[0] == 0 and face.visibility[1] == 1
+    assert face.visibility[0] == 0 and face.visibility[1] == 2
     assert len(face.points) == update.POINT_COUNT
 
 
@@ -195,7 +195,8 @@ def test_68_points_use_their_own_field_and_keep_coordinates(tmp_path):
         assert face.label == "kpt_face"
         assert len(face.points) == update.POINT_COUNT_68
         assert face.points[0] == [0.01, 0.02]
-        assert face.visibility[0] == 0 and face.visibility[1] == 4
+        assert face.visibility[0] == 2 and face.visibility[1] == 1
+        assert set(face.visibility[2:]) == {1}
         assert list(dataset.skeletons["keypoints_68"].labels) == [f"f{index}" for index in range(68)]
         assert "keypoints" not in dataset.skeletons
     finally:
@@ -268,7 +269,7 @@ def test_update_matches_sha256_and_keeps_existing_boxes(tmp_path):
         assert keypoint.label == "kpt_face"
         assert len(keypoint.points) == update.POINT_COUNT
         assert math.isnan(keypoint.points[0][0])
-        assert list(keypoint.visibility) == [0 if index == 0 else 1 for index in range(update.POINT_COUNT)]
+        assert list(keypoint.visibility) == [0 if index == 0 else 2 for index in range(update.POINT_COUNT)]
         assert str(face.instance.id) == str(keypoint.instance.id)
         assert list(dataset.skeletons["keypoints"].labels) == names()
         assert [list(edge) for edge in dataset.skeletons["keypoints"].edges] == [[0, 1], [1, 2]]

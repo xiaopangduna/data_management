@@ -200,6 +200,19 @@ def _as_visibility(value: object, point_count: int) -> int | None:
     return int(value)
 
 
+def stored_visibility(point_count: int, flag: int, hidden: bool) -> int:
+    """Return a COCO visibility: 0 unlabeled, 1 occluded, 2 visible.
+
+    A 42-point file uses 0 for absent and 1 for visible. A 68-point file uses 0
+    for visible and 1 through 4 for occluded. A missing coordinate stays 0.
+    """
+    if hidden:
+        return 0
+    if point_count == POINT_COUNT_68:
+        return 2 if flag == 0 else 1
+    return 2 if flag == 1 else 0
+
+
 def _point_hidden(point_count: int, x: float, y: float, flag: int) -> bool:
     """Hide a missing slot. 68-point files keep a point whenever it has coordinates."""
     if point_count == POINT_COUNT_68:
@@ -310,8 +323,9 @@ def absolute_points(
         flag = _as_visibility(raw_points[offset + 2], point_count)
         if x is None or y is None or flag is None:
             return None
-        visibility.append(flag)
-        points.append((float("nan"), float("nan")) if _point_hidden(point_count, x, y, flag) else (x, y))
+        hidden = _point_hidden(point_count, x, y, flag)
+        visibility.append(stored_visibility(point_count, flag, hidden))
+        points.append((float("nan"), float("nan")) if hidden else (x, y))
     return tuple(points), tuple(visibility)
 
 
