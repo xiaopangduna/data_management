@@ -412,12 +412,32 @@ uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/
 uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/eye/v301_eye/ --split test_v302 --sample-tags test_v302 --classes head-eye_open_0,head-eye_open_1,head-eye_open_2 --export-media copy
 
 uv run scripts/export_yolo.py --dataset BBM08S_head --out-dir /home/huangwenhua/project/dataset/eye/v302_eye/ --split train_v302 --sample-tags train_v302 --classes head-eye_open_0,head-eye_open_1,head-eye_open_2
+
+
+uv run python scripts/export_coco_keypoints.py --dataset BBM08S_head --out-dir /path/to/v001_face_42/train --split train --sample-tags kpt_train --keypoints-field keypoints --dry-run
+
 ```
 
 默认软链原图。无框图保留为空 txt。`--label-field` 默认 `ground_truth`。`--split` 控制 `images/<split>` 和 `labels/<split>` 目录名，默认 `train`。
 
 图片和标注采用相同名称主体，例如 `baby_head__adult_head_000001.jpg/.txt`。
 前缀取实际导出标注的类别，去重后按导出类别 ID 顺序排列（未指定 `--classes` 时按类别名排序），最多 6 个类别，超出追加 `__more`；无框图使用 `negative`。类别名中的不安全字符替换为下划线，过长名称截短。后缀为本次导出从 1 开始的全局序号，至少 6 位，原图扩展名保留。不同批次的序号可能重复，不保证跨批次文件名唯一。
+
+### 导出关键点训练
+
+写出 RTMPose `CocoWholeBodyFaceDataset` 用的 COCO JSON。一次命令一个 split：`images/` 里是图片，旁边是 `instance_<split>.json`。`--keypoints-field` 只能是 `keypoints`（42 点）或 `keypoints_68`（68 点）。点的顺序和连线用该字段上的骨架。`face_box` 和 `bbox` 都是配对框的像素 `xywh`。可见性按库里的值写出：0 未标注、1 遮挡、2 可见。未标注的点坐标写成 0。框和点配不上、没有这套点、或没有宽高的样本跳过，记在 `tmp/export_coco_keypoints_<数据集>.csv`。同一个 split 里图片文件名重复则停下，不写出文件。没有脸的图不导出。
+
+```bash
+uv run python scripts/export_coco_keypoints.py \
+  --dataset BBM08S_head \
+  --out-dir /path/to/v001_face_42/train \
+  --split train \
+  --sample-tags kpt_train \
+  --keypoints-field keypoints \
+  --dry-run
+```
+
+验证集把 `--split` 换成 `val`，`--sample-tags` 换成对应 tag，`--out-dir` 换成验证目录。68 点把 `--keypoints-field` 换成 `keypoints_68`，单独一个目录。
 
 ## 约定
 
@@ -444,7 +464,7 @@ scripts/
   update_media.py / update_xlabel_labels.py / update_face_keypoints.py
   dedup_fiftyone.py
   check_image_dupes.py
-  export_xlabel.py / export_yolo.py
+  export_xlabel.py / export_yolo.py / export_coco_keypoints.py
   convert_yolo_to_xlabel.py
   export_cvat.py / update_cvat_labels.py
   update_label_attributes.py / update_tags_from_attributes.py
