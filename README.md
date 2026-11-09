@@ -46,7 +46,7 @@ mongorestore   --uri="mongodb://127.0.0.1:27017"   --gzip   --archive="$HOME/pro
 
 ```
 
-# FiftyOne + CVAT
+# FiftyOne 与 CVAT
 
 页面：http://192.168.101.118:8080  http://localhost:8080。`cvat_server`、`cvat_ui`、`traefik`、`nuclio` 和检测函数都是 `restart=always`。机器重启后只要 Docker 会自启，不用再拉。执行过 `docker compose down` 才需要下面的启动命令。
 
@@ -60,42 +60,127 @@ printf 'CVAT_HOST=192.168.101.118\n' > .env
 docker compose -f docker-compose.yml -f components/serverless/docker-compose.serverless.yml up -d
 ```
 
-## 导出已有框
+## 连接
 
-在 `data_management` 里执行。只上传 `--classes` 里已有的框，其它类别留在 FiftyOne。`kpt` 开头的框不走这里，用下面的关键点命令。`--anno-key` 不能重复。成功后样本打上 `cvat_<anno-key>`。
+在 `data_management` 里执行，不要在 `src/cvat` 里跑。
 
 ```bash
 export FIFTYONE_CVAT_URL='http://192.168.101.118:8080'
 export FIFTYONE_CVAT_USERNAME='...'
 export FIFTYONE_CVAT_PASSWORD='...'
+```
 
+## 框
+
+按 sample tags 选出要改的图，把 `--classes` 里已有的框发到 CVAT。其它类别留在库里，不上传。`kpt` 开头的框不走这里，用下面的关键点命令。CVAT 单次上传不能超过 1 GB，并且一个请求里每张图都会占一个打开的文件。脚本按文件大小和张数把这一批切成多个任务，每个任务控制在 800 MB、512 张以内。这些任务共用一个项目和一个 `--anno-key`。第一个任务的名字是 `--anno-key`，后面是 `<anno-key>_1`、`<anno-key>_2`。`--project-name` 默认等于 `--dataset`，项目里的类别必须和 `--classes` 一致。`--anno-key` 不能重复，成功后样本会打上 `cvat_<anno-key>`。
+
+```bash
 uv run python scripts/export_cvat.py \
   --dataset BBM08S_head \
-  --sample-tags relabel_head \
-  --anno-key cvat_head_261028 \
-  --classes head \
+  --sample-tags relabel \
+  --anno-key cvat_head_261012 \
+  --classes baby_head,adult_head \
   --dry-run
 ```
 
-去掉 `--dry-run` 后才会上传。一批图会按 800 MB、512 张切成多个任务，CVAT 里的名字是 `cvat_head_261028`、`cvat_head_261028_1`、`cvat_head_261028_2`。
+去掉 `--dry-run` 后才会上传。
 
-## CVAT 预标注
+## 预标注
 
 打开每个任务，选 **Actions → Automatic annotation**，模型选 **Head v009**。它加载单通道权重 `body_head_face/runs/detect/20261027_head_v009_v8n/weights/best.pt`，输出 `head-age_0` 和 `head-age_2`。阈值用 **0.25**。任务里只有标签 `head` 时，两个类别都只能映射到 `head`，年龄会丢掉；要保留年龄，项目里先加上这两个标签再做对应。勾选 **Clean old annotations** 会清掉刚从 FiftyOne 传上去的框。
 
 **Region of interest** 留空表示整张图都检测。填了 `x`、`y`、`width`、`height` 就只检测这块像素区域。这一批图的宽高必须相同，区域也必须落在每一张图里。
 
-标完后用同一个 `--anno-key` 写回。只替换 `--classes`。已有框改位置，删掉的框删掉，新框加上。不传 `--attributes` 时，配对上的框保留原来的字段和 label tags。
+## 写回框
 
-在 `data_management` 里执行，不要在 `src/cvat` 里跑。
+标完后用同一个 `--anno-key` 写回：只替换 `--classes`。已有框改位置，删掉的框删掉，新框加上。框有变化，或这次任务带上的字段（例如 `age`）变了，样本追加 `--sample-tags` 和 `changed`。同一类别的框按位置互相配对，不按排序顺序硬比。有图像宽高时，每条边移动不超过 5 像素视为未改，用来忽略 CVAT 的像素取整。框的数量变了仍然算改过。不传 `--attributes` 时，配对上的框保留原来的字段和 label tags。配对上的框会保留原来的 `age_*` 这类 tag，方便下一步用字段覆盖。
 
 ```bash
-cd /home/huangwenhua/project/2026_09_baby_monitor_08S/src/data_management
 uv run python scripts/update_cvat_labels.py \
   --dataset BBM08S_head \
-  --anno-key cvat_head_261028 \
+  --anno-key cvat_head_261012 \
+  --classes baby_head,adult_head \
+  --sample-tags label_cvat_261012 \
+  --dry-run
+```
+
+## 关键点
+
+42 个关键点和它的框一起上传。`--label` 默认 `kpt_face`，也可以换成其它 `kpt` 开头的名字。CVAT 里骨架用这个名字，矩形用 `<标签>_box`，例如 `kpt_face` 和 `kpt_face_box`。拉回时矩形写回原来的框名。同一张脸的框和点配成一对：instance 相同，或这张图上各只有一个。配不上就整批停下。删掉框或整张骨架时，这一对从库里去掉。少一个点仍占原来的下标。可见性用 0 未标注、1 遮挡、2 可见：未标注在 CVAT 里是 outside，遮挡是 occluded。42 点和 68 点不能混用，所以 `--keypoints-field`、`--skeleton-config`、`--project-name` 都要写上。42 点用 `keypoints`、`configs/face_keypoint_42.json`、`<数据集>_keypoints_42`。68 点用 `keypoints_68`、`configs/face_keypoint_68.json`、`<数据集>_keypoints_68`。两套点共用框 `kpt_face`，不要和框的项目混用。`--skeleton-config` 是点名对应 `[x, y]`，名字必须和库里的骨架一致。CVAT 把这张图缩放到拖出的矩形里。已经建好的项目沿用里面保存的模板。只有一个任务时，CVAT 里的名字是 `--anno-key`；多于一个时是 `<anno-key>_1`、`<anno-key>_2`。
+
+```bash
+uv run python scripts/export_cvat_keypoints.py \
+  --dataset BBM08S_head \
+  --sample-tags kpt_train \
+  --anno-key cvat_kpt_42 \
+  --keypoints-field keypoints \
+  --project-name BBM08S_head_keypoints_42 \
+  --skeleton-config configs/face_keypoint_42.json \
+  --dry-run
+```
+
+```bash
+uv run python scripts/export_cvat_keypoints.py \
+  --dataset BBM08S_head \
+  --sample-tags kpt68_train_copy \
+  --anno-key cvat_kpt_68 \
+  --keypoints-field keypoints_68 \
+  --project-name BBM08S_head_keypoints_68 \
+  --skeleton-config configs/face_keypoint_68.json \
+  --dry-run
+```
+
+```bash
+uv run python scripts/update_cvat_keypoints.py \
+  --dataset BBM08S_head \
+  --anno-key cvat_kpt_42 \
+  --sample-tags kpt_cvat \
+  --dry-run
+```
+
+## 年龄字段
+
+框上的 `age_0` 这类 tag 不会随导出送进 CVAT。要让人在 CVAT 里改年龄，先把 tag 抄成字段，再用新的 `--project-name` 导出。旧项目里没有这个字段，不能复用。`age:0-2` 表示字段 `age` 取值 `0`、`1`、`2`，对应 tag `age_0`、`age_1`、`age_2`。多个 `age_*` 取最大的数字；没有则写成 `0`。超出范围的 tag 记在 CSV 里，该字段不写。原来的 tag 先留着。
+
+```bash
+uv run python scripts/update_label_attributes.py \
+  --dataset BBM08S_head \
+  --sample-tags pred_v121_bad \
   --classes head \
-  --sample-tags label_cvat_261028 \
+  --fields age:0-2 \
+  --dry-run
+```
+
+```bash
+uv run python scripts/export_cvat.py \
+  --dataset BBM08S_head \
+  --sample-tags pred_v121_bad \
+  --classes head \
+  --attributes age=0,1,2 \
+  --anno-key cvat_head_261013 \
+  --project-name BBM08S_head_age \
+  --dry-run
+```
+
+标完后用同一个 `--anno-key` 跑 `update_cvat_labels.py` 写回框。框变了或 `age` 变了都会打上 `changed`。
+
+```bash
+uv run python scripts/update_cvat_labels.py \
+  --dataset BBM08S_head \
+  --anno-key cvat_head_261013 \
+  --classes head \
+  --sample-tags label_cvat_261013 \
+  --dry-run
+```
+
+再用字段覆盖 `age_*` tag，其它 tag 不动。`--sample-tags` 选出要处理的图，字段和原来的 tag 不一致时打上 `changed`。YOLO 导出读的是这些 tag。
+
+```bash
+uv run python scripts/update_tags_from_attributes.py \
+  --dataset BBM08S_head \
+  --sample-tags cvat_head_age_261013 \
+  --classes head \
+  --fields age:0-2 \
   --dry-run
 ```
 
@@ -235,102 +320,7 @@ uv run python scripts/export_xlabel.py \
 
 不经过 FiftyOne、只把 YOLO txt 转成 X-AnyLabeling JSON：`scripts/convert_yolo_to_xlabel.py`。
 
-### 导出到 CVAT
-
-按 sample tags 选出要改的图，把 `--classes` 里已有的框发到 CVAT。其它类别留在库里，不上传。CVAT 单次上传不能超过 1 GB，并且一个请求里每张图都会占一个打开的文件。脚本按文件大小和张数把这一批切成多个任务，每个任务控制在 800 MB、512 张以内。这些任务共用一个项目和一个 `--anno-key`；多于一个任务时，CVAT 里的名字是 `<anno-key>_1`、`<anno-key>_2`。`--project-name` 默认等于 `--dataset`，项目里的类别必须和 `--classes` 一致。`--anno-key` 不能重复，成功后样本会打上 `cvat_<anno-key>`。
-
-先设置连接：
-
-```bash
-export FIFTYONE_CVAT_URL='http://192.168.101.118:8080'
-export FIFTYONE_CVAT_USERNAME='...'
-export FIFTYONE_CVAT_PASSWORD='...'
-```
-
-```bash
-uv run python scripts/export_cvat.py \
-  --dataset BBM08S_head \
-  --sample-tags relabel \
-  --anno-key cvat_head_261012 \
-  --classes baby_head,adult_head \
-  --dry-run
-```
-
-去掉 `--dry-run` 后才会上传。标完后用同一个 `--anno-key` 写回：只替换 `--classes`。框有变化，或这次任务带上的字段（例如 `age`）变了，样本追加 `--sample-tags` 和 `changed`。同一类别的框按位置互相配对，不按排序顺序硬比。有图像宽高时，每条边移动不超过 5 像素视为未改，用来忽略 CVAT 的像素取整。框的数量变了仍然算改过。配对上的框会保留原来的 `age_*` 这类 tag，方便下一步用字段覆盖。
-
-```bash
-uv run python scripts/update_cvat_labels.py \
-  --dataset BBM08S_head \
-  --anno-key cvat_head_261012 \
-  --classes baby_head,adult_head \
-  --sample-tags label_cvat_261012 \
-  --dry-run
-```
-
-42 个关键点和它的框一起上传。`--label` 默认 `kpt_face`，也可以换成其它 `kpt` 开头的名字。CVAT 里骨架用这个名字，矩形用 `<标签>_box`，例如 `kpt_face` 和 `kpt_face_box`。拉回时矩形写回原来的框名。同一张脸的框和点配成一对：instance 相同，或这张图上各只有一个。配不上就整批停下。删掉框或整张骨架时，这一对从库里去掉。少一个点仍占原来的下标。可见性用 0 未标注、1 遮挡、2 可见：未标注在 CVAT 里是 outside，遮挡是 occluded。42 点和 68 点不能混用，所以 `--keypoints-field`、`--skeleton-config`、`--project-name` 都要写上。42 点用 `keypoints`、`configs/face_keypoint_42.json`、`<数据集>_keypoints_42`。68 点用 `keypoints_68`、`configs/face_keypoint_68.json`、`<数据集>_keypoints_68`。两套点共用框 `kpt_face`，不要和框的项目混用。`--skeleton-config` 是点名对应 `[x, y]`，名字必须和库里的骨架一致。CVAT 把这张图缩放到拖出的矩形里。已经建好的项目沿用里面保存的模板。
-
-```bash
-uv run python scripts/export_cvat_keypoints.py \
-  --dataset BBM08S_head \
-  --sample-tags kpt_train \
-  --anno-key cvat_kpt_42 \
-  --keypoints-field keypoints \
-  --project-name BBM08S_head_keypoints_42 \
-  --skeleton-config configs/face_keypoint_42.json \
-  --dry-run
-```
-
-```bash
-uv run python scripts/export_cvat_keypoints.py \
-  --dataset BBM08S_head \
-  --sample-tags kpt68_train_copy \
-  --anno-key cvat_kpt_68 \
-  --keypoints-field keypoints_68 \
-  --project-name BBM08S_head_keypoints_68 \
-  --skeleton-config configs/face_keypoint_68.json \
-  --dry-run
-```
-
-```bash
-uv run python scripts/update_cvat_keypoints.py \
-  --dataset BBM08S_head \
-  --anno-key cvat_kpt_42 \
-  --sample-tags kpt_cvat \
-  --dry-run
-```
-
-框上的 `age_0` 这类 tag 不会随导出送进 CVAT。要让人在 CVAT 里改年龄，先把 tag 抄成字段，再用新的 `--project-name` 导出。旧项目里没有这个字段，不能复用。`age:0-2` 表示字段 `age` 取值 `0`、`1`、`2`，对应 tag `age_0`、`age_1`、`age_2`。多个 `age_*` 取最大的数字；没有则写成 `0`。超出范围的 tag 记在 CSV 里，该字段不写。原来的 tag 先留着。
-
-```bash
-uv run python scripts/update_label_attributes.py \
-  --dataset BBM08S_head \
-  --sample-tags pred_v121_bad \
-  --classes head \
-  --fields age:0-2 \
-  --dry-run
-```
-
-```bash
-uv run python scripts/export_cvat.py \
-  --dataset BBM08S_head \
-  --sample-tags pred_v121_bad \
-  --classes head \
-  --attributes age=0,1,2 \
-  --anno-key cvat_head_261013 \
-  --project-name BBM08S_head_age \
-  --dry-run
-```
-
-标完后用同一个 `--anno-key` 跑 `update_cvat_labels.py` 写回框。框变了或 `age` 变了都会打上 `changed`。再用字段覆盖 `age_*` tag，其它 tag 不动。`--sample-tags` 选出要处理的图，字段和原来的 tag 不一致时打上 `changed`。YOLO 导出读的是这些 tag。
-
-```bash
-uv run python scripts/update_tags_from_attributes.py \
-  --dataset BBM08S_head \
-  --sample-tags cvat_head_age_261013 \
-  --classes head \
-  --fields age:0-2 \
-  --dry-run
-```
+CVAT 的导出和写回见上文「FiftyOne 与 CVAT」。
 
 ### Step 5：写回标注
 
@@ -535,46 +525,4 @@ uv run python scripts/update_tags.py \
 ```
 
 默认只扫描当前层；包含子目录时加 `--recursive`。确认统计后去掉 `--dry-run` 正式写库。相同内容的多份输入图片只更新对应样本一次。同一个 SHA-256 或同一个 `phash` 对应多个库内样本时跳过该图，不更新；SHA-256 已唯一命中时不再查 `phash`。统计里 `sha256_hits` / `phash_hits` 是命中的图片数，`matched_samples` 是去重后的样本数。未匹配图片、读取失败、感知哈希计算失败、库内缺少哈希及多样本匹配记录到 `tmp/update_tags_<数据集>.csv`（含 `phash` 列，每次运行覆盖，预览也会生成）。整库缺少 `sha256` 或 `phash` 字段时直接报错，提示先补哈希。
-
-# cvat联动
-
-http://localhost:8080
-可通过字段，与fiftyonbe和cvat标注
-fifityone发布
-cavte标注，
-fiftyone收回
-fityone重新发布异常的标注数据
-fiftyone收回
-
-http://192.168.101.118:8080
-
-uv run python scripts/update_label_attributes.py  
-  --dataset BBM08S_head  
-  --sample-tags pred_v121_bad  
-  --classes head  
-  --fields age:0-2  
-  --dry-run
-
-uv run python scripts/export_cvat.py  
-  --dataset BBM08S_head  
-  --sample-tags pred_v121_bad  
-  --classes head  
-  --attributes age=0,1,2  
-  --anno-key cvat_head_261013  
-  --project-name BBM08S_head_age  
-  --dry-run
-
-uv run python scripts/update_cvat_labels.py  
-  --dataset BBM08S_head  
-  --anno-key cvat_head_261013  
-  --classes head  
-  --sample-tags label_cvat_261013  
-  --dry-run
-
-uv run python scripts/update_tags_from_attributes.py  
-  --dataset BBM08S_head  
-  --sample-tags cvat_head_age_261013  
-  --classes head  
-  --fields age:0-2  
-  --dry-run
 
