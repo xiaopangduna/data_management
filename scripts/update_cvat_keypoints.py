@@ -1,4 +1,4 @@
-"""Write 42-point CVAT face edits back into FiftyOne.
+"""Write 42-point or 68-point CVAT face edits back into FiftyOne.
 
 Replaces one ``kpt`` label in the keypoints field and its box in the detection
 field recorded at upload. The CVAT rectangle ``<label>_box`` is stored under
@@ -50,7 +50,7 @@ shapes = _load_shapes()
 
 
 def parse_args(argv: list[str] | None = None):
-    """Parse CLI arguments for writing a 42-point CVAT run back into FiftyOne."""
+    """Parse CLI arguments for writing a face-keypoint CVAT run back into FiftyOne."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", required=True, type=boxes.nonempty)
     parser.add_argument("--anno-key", required=True, type=boxes.nonempty)
@@ -68,8 +68,9 @@ def run_record(dataset: fo.Dataset, anno_key: str) -> dict:
     record = (dataset.info or {}).get(shapes.RUNS_KEY, {}).get(anno_key)
     if not isinstance(record, dict):
         raise ValueError(f"Keypoint upload does not exist: {anno_key}")
-    if record.get("keypoints_field") != shapes.KEYPOINTS_FIELD:
-        raise ValueError(f"Annotation run '{anno_key}' is not a 42-point face upload")
+    expected = shapes.point_count_for_field(str(record.get("keypoints_field") or ""))
+    if len(list(record.get("labels") or [])) != expected:
+        raise ValueError(f"Annotation run '{anno_key}' is not a {expected}-point face upload")
     shapes.require_kpt_label(str(record.get("label") or ""))
     if not record.get("label_field"):
         raise ValueError(f"Annotation run '{anno_key}' is missing label_field")
@@ -322,7 +323,7 @@ def apply_pairs(
 
 
 def run(args, api: object | None = None) -> int:
-    """Download one 42-point skeleton run and merge it into FiftyOne."""
+    """Download one face-skeleton run and merge it into FiftyOne."""
     if not fo.dataset_exists(args.dataset):
         raise ValueError(f"Dataset does not exist: {args.dataset}")
     dataset = fo.load_dataset(args.dataset)
@@ -338,7 +339,7 @@ def run(args, api: object | None = None) -> int:
         "label_field": record["label_field"],
         "label": record["label"],
         "box_label": record.get("box_label") or shapes.box_label_name(record["label"]),
-        "points": shapes.POINT_COUNT,
+        "points": len(record.get("labels") or []),
         "project_name": record["project_name"],
         "tasks": len(record["tasks"]),
         "samples": len(sample_ids),

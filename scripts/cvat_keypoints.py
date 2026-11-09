@@ -1,4 +1,4 @@
-"""Build and read CVAT skeleton shapes for the 42-point face field.
+"""Build and read CVAT skeleton shapes for the 42-point and 68-point face fields.
 
 FiftyOne's CVAT uploader sends keypoints as one unlabeled points shape, so a
 point can be added or deleted and the index changes. These helpers use a CVAT
@@ -16,10 +16,26 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 
 POINT_COUNT = 42
+POINT_COUNT_68 = 68
 FACE_LABEL = "kpt_face"
 KEYPOINTS_FIELD = "keypoints"
+KEYPOINTS_68_FIELD = "keypoints_68"
+FIELD_POINT_COUNTS = {
+    KEYPOINTS_FIELD: POINT_COUNT,
+    KEYPOINTS_68_FIELD: POINT_COUNT_68,
+}
 RUNS_KEY = "cvat_keypoint_runs"
 COORD_DECIMALS = 6
+
+
+def point_count_for_field(field_name: str) -> int:
+    """Return 42 or 68 for a face keypoint field."""
+    try:
+        return FIELD_POINT_COUNTS[field_name]
+    except KeyError:
+        raise ValueError(
+            f"Keypoint upload uses '{KEYPOINTS_FIELD}' or '{KEYPOINTS_68_FIELD}', found {field_name}"
+        ) from None
 
 
 def load_template(path: Path) -> dict[str, tuple[int, int]]:
@@ -111,9 +127,9 @@ def skeleton_label(
     name: str = FACE_LABEL,
     positions: dict[str, tuple[int, int]] | None = None,
 ) -> dict:
-    """Return one CVAT project label for a 42-point face skeleton."""
-    if len(labels) != POINT_COUNT:
-        raise ValueError(f"Expected {POINT_COUNT} keypoint names, found {len(labels)}")
+    """Return one CVAT project label for a 42-point or 68-point face skeleton."""
+    if len(labels) not in FIELD_POINT_COUNTS.values():
+        raise ValueError(f"Expected 42 or 68 keypoint names, found {len(labels)}")
     require_kpt_label(name)
     return {
         "name": name,

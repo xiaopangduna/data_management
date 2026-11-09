@@ -1,4 +1,4 @@
-"""Upload 42-point faces and their boxes to CVAT.
+"""Upload 42-point or 68-point faces and their boxes to CVAT.
 
 Selects samples by sample tags. Each face is a CVAT skeleton plus a rectangle
 in the same group. The skeleton keeps the FiftyOne label, which must start with
@@ -45,32 +45,28 @@ shapes = _load_shapes()
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parse CLI arguments for a 42-point CVAT upload."""
+    """Parse CLI arguments for a 42-point or 68-point CVAT upload."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", required=True, type=boxes.nonempty)
     parser.add_argument("--sample-tags", required=True, type=boxes.name_list)
     parser.add_argument("--anno-key", required=True, type=boxes.anno_key)
-    parser.add_argument("--project-name", default=None, type=boxes.nonempty)
+    parser.add_argument("--project-name", required=True, type=boxes.nonempty)
     parser.add_argument("--label-field", default=boxes.DEFAULT_LABEL_FIELD, type=boxes.nonempty)
-    parser.add_argument("--keypoints-field", default=shapes.KEYPOINTS_FIELD, type=boxes.nonempty)
+    parser.add_argument("--keypoints-field", required=True, type=boxes.nonempty)
     parser.add_argument("--label", default=shapes.FACE_LABEL, type=boxes.nonempty)
     parser.add_argument(
         "--skeleton-config",
-        default=None,
+        required=True,
         type=Path,
-        help="JSON map of point name to [x, y]. CVAT scales it into a newly drawn skeleton.",
+        help="JSON map of point name to [x, y]. Names must match the chosen keypoint field.",
     )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
 
 
-def default_project_name(dataset_name: str) -> str:
-    """Return the CVAT project used for 42-point faces."""
-    return f"{dataset_name}_keypoints_42"
-
-
 def require_skeleton(dataset: fo.Dataset, field_name: str) -> fo.KeypointSkeleton:
-    """Return the 42-point skeleton stored on ``field_name``."""
+    """Return the face skeleton stored on ``field_name``."""
+    point_count = shapes.point_count_for_field(field_name)
     if not dataset.has_field(field_name):
         raise ValueError(f"Keypoints field does not exist: {field_name}")
     field = dataset.get_field(field_name)
@@ -80,9 +76,9 @@ def require_skeleton(dataset: fo.Dataset, field_name: str) -> fo.KeypointSkeleto
     if skeleton is None:
         raise ValueError(f"Field '{field_name}' has no skeleton")
     labels = list(skeleton.labels or [])
-    if len(labels) != shapes.POINT_COUNT:
+    if len(labels) != point_count:
         raise ValueError(
-            f"This upload is for {shapes.POINT_COUNT} points, found {len(labels)} on '{field_name}'"
+            f"This upload is for {point_count} points, found {len(labels)} on '{field_name}'"
         )
     return skeleton
 
@@ -130,10 +126,11 @@ def shapes_for_pairs(
     """Return one rectangle and one skeleton for each face. Groups start at 1."""
     width, height = size
     built = []
+    point_count = len(sublabel_ids)
     for group, (box, keypoint) in enumerate(pairs, start=1):
         points = list(keypoint.points or [])
-        if len(points) != shapes.POINT_COUNT:
-            raise ValueError(f"Expected {shapes.POINT_COUNT} points, found {len(points)}")
+        if len(points) != point_count:
+            raise ValueError(f"Expected {point_count} points, found {len(points)}")
         visibility = None
         if keypoint.has_attribute("visibility"):
             visibility = [int(flag) for flag in (keypoint.visibility or [])]
@@ -190,7 +187,7 @@ def ensure_project(
     if names != point_names:
         raise ValueError(
             f"CVAT project '{project_name}' must contain skeleton '{label}' and rectangle '{box_name}' "
-            "in the dataset's 42-point order. Choose another --project-name."
+            f"in the dataset's {len(point_names)}-point order. Choose another --project-name."
         )
     skeleton_label, rectangle = shapes.face_project_labels(found, label, box_name)
     return (
@@ -213,20 +210,15 @@ def connect(api: object | None):
 
 
 def run(args: argparse.Namespace, api: object | None = None) -> int:
-    """Select samples and upload their 42-point faces to CVAT."""
+    """Select samples and upload their 42-point or 68-point faces to CVAT."""
     if not fo.dataset_exists(args.dataset):
         raise ValueError(f"Dataset does not exist: {args.dataset}")
     dataset = fo.load_dataset(args.dataset)
-    if args.keypoints_field != shapes.KEYPOINTS_FIELD:
-        raise ValueError(
-            f"This upload sends {shapes.POINT_COUNT} points from {shapes.KEYPOINTS_FIELD}"
-        )
+    point_count = shapes.point_count_for_field(args.keypoints_field)
     shapes.require_kpt_label(args.label)
     skeleton = require_skeleton(dataset, args.keypoints_field)
-    positions = None
-    if args.skeleton_config is not None:
-        positions = shapes.load_template(args.skeleton_config)
-        shapes.template_positions(list(skeleton.labels or []), positions)
+    positions = shapes.load_template(args.skeleton_config)
+    shapes.template_positions(list(skeleton.labels or []), positions)
     boxes.ensure_detections_field(dataset, args.label_field)
     if args.anno_key in dataset.list_annotation_runs() or args.anno_key in saved_runs(dataset):
         raise ValueError(f"Annotation run '{args.anno_key}' already exists. Choose another --anno-key.")
@@ -234,7 +226,7 @@ def run(args: argparse.Namespace, api: object | None = None) -> int:
     selected = len(view)
     if selected == 0:
         raise ValueError("No samples matched --sample-tags.")
-    project_name = args.project_name or default_project_name(args.dataset)
+    project_name = args.project_name
     box_name = shapes.box_label_name(args.label)
     tag = boxes.pending_tag(args.anno_key)
     paths = [str(path) for path in view.values("filepath")]
@@ -255,9 +247,9 @@ def run(args: argparse.Namespace, api: object | None = None) -> int:
         except ValueError as error:
             raise ValueError(f"Sample {sample_id}: {error}") from error
         for _box, keypoint in pairs:
-            if len(list(keypoint.points or [])) != shapes.POINT_COUNT:
+            if len(list(keypoint.points or [])) != point_count:
                 raise ValueError(
-                    f"Sample {sample_id}: expected {shapes.POINT_COUNT} points, "
+                    f"Sample {sample_id}: expected {point_count} points, "
                     f"found {len(list(keypoint.points or []))}"
                 )
         prepared.append({"sample_id": sample_id, "size": size, "pairs": pairs})
@@ -271,10 +263,10 @@ def run(args: argparse.Namespace, api: object | None = None) -> int:
         "box_label": box_name,
         "label_field": args.label_field,
         "keypoints_field": args.keypoints_field,
-        "points": shapes.POINT_COUNT,
+        "points": point_count,
         "anno_key": args.anno_key,
         "project_name": project_name,
-        "skeleton_config": "" if args.skeleton_config is None else str(args.skeleton_config),
+        "skeleton_config": str(args.skeleton_config),
         "samples": selected,
         "pairs": sum(len(item["pairs"]) for item in prepared),
         "upload_bytes": sum(sizes),
@@ -330,7 +322,7 @@ def run(args: argparse.Namespace, api: object | None = None) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Upload a tagged slice of 42-point faces to CVAT."""
+    """Upload a tagged slice of 42-point or 68-point faces to CVAT."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     args = parse_args(argv)
     try:

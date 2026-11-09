@@ -1,5 +1,6 @@
-"""42-point CVAT skeleton upload and pullback."""
+"""42-point and 68-point CVAT skeleton upload and pullback."""
 import importlib.util
+import json
 import math
 import re
 import sys
@@ -29,7 +30,16 @@ def labels() -> list[str]:
     return [f"p{index}" for index in range(shapes.POINT_COUNT)]
 
 
+def write_config(path: Path, names: list[str]) -> Path:
+    path.write_text(
+        json.dumps({name: [index, 0] for index, name in enumerate(names)}),
+        encoding="utf-8",
+    )
+    return path
+
+
 FACE_CONFIG = Path(__file__).parents[1] / "configs" / "face_keypoint_42.json"
+FACE68_CONFIG = Path(__file__).parents[1] / "configs" / "face_keypoint_68.json"
 FACE_NAMES = [
     *[f"chin_{index}" for index in range(9)],
     *[f"nose_bridge_{index}" for index in range(4)],
@@ -57,6 +67,24 @@ def test_face_config_lays_out_a_frontal_face():
     assert chin_center[1] > chin_side[1]
     assert right_outer[0] < left_outer[0]
     assert mouth[1] > right_outer[1]
+    assert not svg.lstrip().startswith("<svg")
+
+
+def test_face68_config_lays_out_a_frontal_face():
+    positions = shapes.load_template(FACE68_CONFIG)
+    names = list(positions)
+    label = shapes.skeleton_label(names, [[0, 1], [67, 60]], positions=positions)
+    svg = label["svg"]
+    assert circle_center(svg, "chin_8")[1] > circle_center(svg, "chin_0")[1]
+    assert circle_center(svg, "chin_0")[0] < circle_center(svg, "chin_16")[0]
+    assert circle_center(svg, "right_eyebrow_0")[0] < circle_center(svg, "left_eyebrow_4")[0]
+    assert circle_center(svg, "right_eyebrow_2")[1] < circle_center(svg, "right_eye_1")[1]
+    assert circle_center(svg, "right_eye_0")[0] < circle_center(svg, "left_eye_3")[0]
+    outer_top = circle_center(svg, "outer_mouth_3")[1]
+    inner_top = circle_center(svg, "inner_mouth_2")[1]
+    inner_bottom = circle_center(svg, "inner_mouth_6")[1]
+    outer_bottom = circle_center(svg, "outer_mouth_9")[1]
+    assert outer_top < inner_top < inner_bottom < outer_bottom
     assert not svg.lstrip().startswith("<svg")
 
 
@@ -169,10 +197,14 @@ def test_dry_run_reports_the_42_point_upload(tmp_path, capsys):
         }
         dataset.save()
         dataset.add_sample(face_sample(image))
+        config = write_config(tmp_path / "points.json", labels())
         args = export.parse_args([
             "--dataset", dataset.name,
             "--sample-tags", "kpt_train",
             "--anno-key", "cvat_kpt_42",
+            "--keypoints-field", "keypoints",
+            "--project-name", "BBM08S_head_keypoints_42",
+            "--skeleton-config", str(config),
             "--dry-run",
         ])
         assert export.run(args) == 0
@@ -199,6 +231,8 @@ def test_dry_run_checks_the_skeleton_config(tmp_path, capsys):
             "--dataset", dataset.name,
             "--sample-tags", "kpt_train",
             "--anno-key", "cvat_kpt_42",
+            "--keypoints-field", "keypoints",
+            "--project-name", "BBM08S_head_keypoints_42",
             "--skeleton-config", str(FACE_CONFIG),
             "--dry-run",
         ])
@@ -212,6 +246,8 @@ def test_dry_run_checks_the_skeleton_config(tmp_path, capsys):
             "--dataset", dataset.name,
             "--sample-tags", "kpt_train",
             "--anno-key", "cvat_kpt_other",
+            "--keypoints-field", "keypoints",
+            "--project-name", "BBM08S_head_keypoints_42",
             "--skeleton-config", str(FACE_CONFIG),
             "--dry-run",
         ])
@@ -231,10 +267,14 @@ def test_dry_run_accepts_another_kpt_label(tmp_path, capsys):
         }
         dataset.save()
         dataset.add_sample(face_sample(image, "kpt_hand"))
+        config = write_config(tmp_path / "points.json", labels())
         args = export.parse_args([
             "--dataset", dataset.name,
             "--sample-tags", "kpt_train",
             "--anno-key", "cvat_kpt_hand",
+            "--keypoints-field", "keypoints",
+            "--project-name", "BBM08S_head_keypoints_42",
+            "--skeleton-config", str(config),
             "--label", "kpt_hand",
             "--dry-run",
         ])
@@ -252,6 +292,9 @@ def test_label_must_start_with_kpt():
             "--dataset", dataset.name,
             "--sample-tags", "kpt_train",
             "--anno-key", "cvat_kpt_42",
+            "--keypoints-field", "keypoints",
+            "--project-name", "BBM08S_head_keypoints_42",
+            "--skeleton-config", "/tmp/unused.json",
             "--label", "face",
             "--dry-run",
         ])
@@ -275,10 +318,14 @@ def test_unpaired_face_stops_the_upload(tmp_path):
             fo.Detection(label="kpt_face", bounding_box=[0.4, 0.4, 0.2, 0.2])
         )
         dataset.add_sample(sample)
+        config = write_config(tmp_path / "points.json", labels())
         args = export.parse_args([
             "--dataset", dataset.name,
             "--sample-tags", "kpt_train",
             "--anno-key", "cvat_kpt_42",
+            "--keypoints-field", "keypoints",
+            "--project-name", "BBM08S_head_keypoints_42",
+            "--skeleton-config", str(config),
             "--dry-run",
         ])
         with pytest.raises(ValueError, match="do not pair"):
@@ -427,22 +474,41 @@ def test_pullback_dry_run_reports_changes_without_writing(tmp_path, capsys, monk
         dataset.delete()
 
 
-def test_rejects_a_68_point_field():
+def test_dry_run_reports_the_68_point_upload(tmp_path, capsys):
+    image = tmp_path / "face.jpg"
+    Image.new("RGB", (8, 8)).save(image)
+    names = list(shapes.load_template(FACE68_CONFIG))
     dataset = fo.Dataset()
     try:
         dataset.skeletons = {
-            "keypoints_68": fo.KeypointSkeleton(labels=[f"f{index}" for index in range(68)], edges=[[0, 1]]),
+            "keypoints_68": fo.KeypointSkeleton(labels=names, edges=[[0, 1]]),
         }
         dataset.save()
-        dataset.add_sample(fo.Sample(filepath="/tmp/face.jpg", tags=["kpt68_train"]))
+        dataset.add_sample(fo.Sample(
+            filepath=str(image),
+            tags=["kpt68_train_copy"],
+            metadata=fo.ImageMetadata(width=100, height=50),
+            ground_truth=fo.Detections(detections=[
+                fo.Detection(label="kpt_face", bounding_box=[0.2, 0.2, 0.3, 0.3]),
+            ]),
+            keypoints_68=fo.Keypoints(keypoints=[
+                fo.Keypoint(label="kpt_face", points=[(0.2, 0.2)] * 68),
+            ]),
+        ))
         args = export.parse_args([
             "--dataset", dataset.name,
-            "--sample-tags", "kpt68_train",
+            "--sample-tags", "kpt68_train_copy",
             "--anno-key", "cvat_kpt_68",
             "--keypoints-field", "keypoints_68",
+            "--project-name", "BBM08S_head_keypoints_68",
+            "--skeleton-config", str(FACE68_CONFIG),
             "--dry-run",
         ])
-        with pytest.raises(ValueError, match="42"):
-            export.run(args)
+        assert export.run(args) == 0
+        output = capsys.readouterr().out
+        assert "points=68" in output
+        assert "keypoints_field=keypoints_68" in output
+        assert "project_name=" in output and output.split("project_name=")[1].splitlines()[0].endswith("keypoints_68")
+        assert shapes.RUNS_KEY not in (dataset.info or {})
     finally:
         dataset.delete()
