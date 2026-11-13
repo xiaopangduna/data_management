@@ -427,6 +427,127 @@ def boxes_from_shapes(
     return boxes
 
 
+def track_position(shapes: list[dict], frame: int) -> dict | None:
+    """Return one CVAT track's position on ``frame``.
+
+    Coordinates are interpolated between the surrounding keyframes. ``outside``
+    and ``occluded`` stay with the keyframe at or before ``frame``. A frame
+    before the first keyframe is outside. No keyframes returns None.
+    """
+    keyed = sorted(
+        (int(shape["frame"]), shape)
+        for shape in shapes
+        if shape.get("frame") is not None
+    )
+    if not keyed:
+        return None
+    left = None
+    right = None
+    for key_frame, shape in keyed:
+        if key_frame <= frame:
+            left = (key_frame, shape)
+        elif right is None:
+            right = (key_frame, shape)
+            break
+    if left is None:
+        return {
+            "points": [float(value) for value in list(right[1].get("points") or [])],
+            "outside": True,
+            "occluded": False,
+        }
+    left_points = [float(value) for value in list(left[1].get("points") or [])]
+    if right is None:
+        return {
+            "points": left_points,
+            "outside": bool(left[1].get("outside")),
+            "occluded": bool(left[1].get("occluded")),
+        }
+    right_points = [float(value) for value in list(right[1].get("points") or [])]
+    offset = (frame - left[0]) / (right[0] - left[0])
+    if left_points and len(left_points) == len(right_points):
+        points = [
+            left_value + (right_value - left_value) * offset
+            for left_value, right_value in zip(left_points, right_points, strict=True)
+        ]
+    else:
+        points = left_points
+    return {
+        "points": points,
+        "outside": bool(left[1].get("outside")),
+        "occluded": bool(left[1].get("occluded")),
+    }
+
+
+def skeletons_from_tracks(
+    tracks: list[dict],
+    frame: int,
+    skeleton_id: int,
+    node_order: list[int],
+    width: int,
+    height: int,
+) -> list[tuple[list[tuple[float, float]], list[int], int]]:
+    """Read one frame's skeleton tracks as ``(points, visibility, group)``.
+
+    A track that is outside on this frame is omitted. An outside element comes
+    back as NaN with visibility 0.
+    """
+    faces = []
+    for track in tracks:
+        if int(track.get("label_id", -1)) != skeleton_id:
+            continue
+        position = track_position(list(track.get("shapes") or []), frame)
+        if position is None or position["outside"]:
+            continue
+        elements = {
+            int(element["label_id"]): element
+            for element in track.get("elements") or []
+            if element.get("label_id") is not None
+        }
+        points = []
+        visibility = []
+        for sublabel_id in node_order:
+            element = elements.get(sublabel_id)
+            element_position = None if element is None else track_position(
+                list(element.get("shapes") or []), frame
+            )
+            if element_position is None:
+                point, flag = relative_point(None, width, height, True, False)
+            else:
+                point, flag = relative_point(
+                    element_position["points"],
+                    width,
+                    height,
+                    bool(element_position["outside"]),
+                    bool(element_position["occluded"]),
+                )
+            points.append(point)
+            visibility.append(flag)
+        faces.append((points, visibility, int(track.get("group") or 0)))
+    return faces
+
+
+def boxes_from_tracks(
+    tracks: list[dict],
+    frame: int,
+    box_label_id: int,
+    width: int,
+    height: int,
+) -> list[tuple[list[float], int]]:
+    """Read one frame's rectangle tracks as ``(relative xywh, group)``."""
+    boxes = []
+    for track in tracks:
+        if int(track.get("label_id", -1)) != box_label_id:
+            continue
+        position = track_position(list(track.get("shapes") or []), frame)
+        if position is None or position["outside"]:
+            continue
+        points = list(position["points"])
+        if len(points) < 4:
+            continue
+        boxes.append((relative_box(points, width, height), int(track.get("group") or 0)))
+    return boxes
+
+
 def pair_downloaded(
     faces: list[tuple[list, list, int]],
     boxes: list[tuple[list[float], int]],

@@ -106,7 +106,7 @@ uv run python scripts/update_cvat_labels.py \
 
 ## 关键点
 
-42 个关键点和它的框一起上传。`--label` 默认 `kpt_face`，也可以换成其它 `kpt` 开头的名字。CVAT 里骨架用这个名字，矩形用 `<标签>_box`，例如 `kpt_face` 和 `kpt_face_box`。拉回时矩形写回原来的框名。同一张脸的框和点配成一对：instance 相同，或这张图上各只有一个。配不上就整批停下。删掉框或整张骨架时，这一对从库里去掉。少一个点仍占原来的下标。可见性用 0 未标注、1 遮挡、2 可见：未标注在 CVAT 里是 outside，遮挡是 occluded。42 点和 68 点不能混用，所以 `--keypoints-field`、`--skeleton-config`、`--project-name` 都要写上。42 点用 `keypoints`、`configs/face_keypoint_42.json`、`<数据集>_keypoints_42`。68 点用 `keypoints_68`、`configs/face_keypoint_68.json`、`<数据集>_keypoints_68`。两套点共用框 `kpt_face`，不要和框的项目混用。`--skeleton-config` 是点名对应 `[x, y]`，名字必须和库里的骨架一致。CVAT 把这张图缩放到拖出的矩形里。已经建好的项目沿用里面保存的模板。只有一个任务时，CVAT 里的名字是 `--anno-key`；多于一个时是 `<anno-key>_1`、`<anno-key>_2`。
+42 个关键点和它的框一起上传。`--label` 默认 `kpt_face`，也可以换成其它 `kpt` 开头的名字。CVAT 里骨架用这个名字，矩形用 `<标签>_box`，例如 `kpt_face` 和 `kpt_face_box`。拉回时矩形写回原来的框名。同一张脸的框和点配成一对：instance 相同，或这张图上各只有一个。配不上就整批停下。shape 和 track 都读。Track 按每一帧的关键帧展开，和同组的矩形配对。删掉框或整张骨架时，这一对从库里去掉。某一帧上 track 本身是 outside 时，这张图也没有这副骨架。少一个点仍占原来的下标。可见性用 0 未标注、1 遮挡、2 可见：未标注在 CVAT 里是 outside，遮挡是 occluded。42 点和 68 点不能混用，所以 `--keypoints-field`、`--skeleton-config`、`--project-name` 都要写上。42 点用 `keypoints`、`configs/face_keypoint_42.json`、`<数据集>_keypoints_42`。68 点用 `keypoints_68`、`configs/face_keypoint_68.json`、`<数据集>_keypoints_68`。两套点共用框 `kpt_face`，不要和框的项目混用。`--skeleton-config` 是点名对应 `[x, y]`，名字必须和库里的骨架一致。CVAT 把这张图缩放到拖出的矩形里。已经建好的项目沿用里面保存的模板。只有一个任务时，CVAT 里的名字是 `--anno-key`；多于一个时是 `<anno-key>_1`、`<anno-key>_2`。
 
 ```bash
 uv run python scripts/export_cvat_keypoints.py \

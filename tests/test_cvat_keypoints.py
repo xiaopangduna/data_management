@@ -155,6 +155,85 @@ def test_project_contains_the_skeleton_and_its_box():
     assert shapes.project_sublabel_names([skeleton, {"name": "head", "type": "rectangle"}]) is None
 
 
+def test_track_keyframes_pair_with_the_box():
+    track = {
+        "label_id": 7,
+        "group": 2,
+        "shapes": [
+            {"type": "skeleton", "frame": 1, "outside": False, "occluded": False, "points": []},
+            {"type": "skeleton", "frame": 3, "outside": True, "occluded": False, "points": []},
+        ],
+        "elements": [{
+            "label_id": 8,
+            "shapes": [
+                {"type": "points", "frame": 1, "outside": False, "occluded": False, "points": [10, 10]},
+                {"type": "points", "frame": 3, "outside": True, "occluded": False, "points": [30, 20]},
+            ],
+        }],
+    }
+    frame_one = shapes.skeletons_from_tracks([track], 1, 7, [8], 100, 50)
+    assert frame_one == [([(0.1, 0.2)], [2], 2)]
+    assert shapes.skeletons_from_tracks([track], 2, 7, [8], 100, 50) == [([(0.2, 0.3)], [2], 2)]
+    assert shapes.skeletons_from_tracks([track], 0, 7, [8], 100, 50) == []
+    assert shapes.skeletons_from_tracks([track], 3, 7, [8], 100, 50) == []
+    box = {
+        "label_id": 9,
+        "group": 2,
+        "shapes": [{"type": "rectangle", "frame": 1, "outside": False, "points": [10, 10, 40, 30]}],
+    }
+    boxes = shapes.boxes_from_tracks([box], 1, 9, 100, 50)
+    assert shapes.pair_downloaded(frame_one, boxes) == [([0.1, 0.2, 0.3, 0.4], [(0.1, 0.2)], [2])]
+
+
+def test_downloaded_faces_reads_shapes_and_tracks():
+    payload = {
+        "shapes": [shapes.rectangle_shape(9, [0.1, 0.2, 0.3, 0.4], 100, 50, frame=0, group=2)],
+        "tracks": [{
+            "label_id": 7,
+            "group": 2,
+            "shapes": [{"type": "skeleton", "frame": 0, "outside": False, "points": []}],
+            "elements": [{
+                "label_id": 8,
+                "shapes": [{"type": "points", "frame": 0, "outside": True, "occluded": False, "points": [0, 0]}],
+            }],
+        }],
+    }
+
+    class API:
+        def _get_task_labels(self, task_id):
+            return [
+                {"id": 7, "name": "kpt_face", "type": "skeleton", "sublabels": [{"id": 8, "name": "p0"}]},
+                {"id": 9, "name": "kpt_face_box", "type": "rectangle"},
+            ]
+
+        def _get_project_labels(self, project_id):
+            return []
+
+        def task_annotation_url(self, task_id):
+            return "annotations"
+
+        def get(self, url):
+            class Response:
+                def json(self):
+                    return payload
+
+            return Response()
+
+    found = update.downloaded_faces(
+        API(),
+        [{"task_id": 1, "sample_ids": ["sample"]}],
+        ["p0"],
+        1,
+        {"sample": (100, 50)},
+        "kpt_face",
+        "kpt_face_box",
+    )
+    box, points, visibility = found["sample"][0]
+    assert box == [0.1, 0.2, 0.3, 0.4]
+    assert len(points) == 1 and math.isnan(points[0][0]) and math.isnan(points[0][1])
+    assert visibility == [0]
+
+
 def test_rectangle_round_trips_and_pairs_by_group():
     shape = shapes.rectangle_shape(3, [0.1, 0.2, 0.3, 0.4], 100, 50, frame=1, group=2)
     assert shape["points"] == [10, 10, 40, 30]

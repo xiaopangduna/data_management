@@ -4,8 +4,10 @@ Replaces one ``kpt`` label in the keypoints field and its box in the detection
 field recorded at upload. The CVAT rectangle ``<label>_box`` is stored under
 the original label. Other labels in both fields stay. A point CVAT marks
 outside comes back as NaN with visibility 0. An occluded point keeps its
-coordinates and visibility 1. A visible point is visibility 2. Deleting the
-box or the whole skeleton removes that pair. Samples whose box or points moved gain
+coordinates and visibility 1. A visible point is visibility 2. A skeleton or
+box saved as a track is expanded from the keyframe on that frame and paired by
+group with shapes. A track that is outside on the frame removes that pair, as
+does deleting the box or the whole skeleton. Samples whose box or points moved gain
 ``--sample-tags`` and ``changed``. The ``cvat_<anno-key>`` tag from the upload
 is left in place. ``--dry-run`` downloads the task and prints how many samples
 changed, without writing the dataset.
@@ -126,12 +128,21 @@ def downloaded_faces(
         )
         payload = api.get(api.task_annotation_url(task["task_id"])).json()
         task_shapes = list(payload.get("shapes") or [])
+        task_tracks = list(payload.get("tracks") or [])
         for frame, sample_id in enumerate(task["sample_ids"]):
             width, height = sizes[sample_id]
-            faces = shapes.skeletons_from_shapes(
-                task_shapes, frame, skeleton_id, node_order, width, height
-            )
-            boxes_found = shapes.boxes_from_shapes(task_shapes, frame, box_id, width, height)
+            faces = [
+                *shapes.skeletons_from_shapes(
+                    task_shapes, frame, skeleton_id, node_order, width, height
+                ),
+                *shapes.skeletons_from_tracks(
+                    task_tracks, frame, skeleton_id, node_order, width, height
+                ),
+            ]
+            boxes_found = [
+                *shapes.boxes_from_shapes(task_shapes, frame, box_id, width, height),
+                *shapes.boxes_from_tracks(task_tracks, frame, box_id, width, height),
+            ]
             found[sample_id] = shapes.pair_downloaded(faces, boxes_found)
     return found
 
